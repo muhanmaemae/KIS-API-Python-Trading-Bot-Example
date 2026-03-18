@@ -31,12 +31,7 @@
 ✔️ Telegram Bot Token 및 Chat ID
 
 📌 **2. 패키지 설치**  
-pip install requests pandas_market_calendars python-telegram-bot pytz yfinance python-dotenv pillow.  
-pip3 install requests.  
-pip3 install yfinance.  
-pip3 install pytz.  
-pip3 install pandas_market_calendars.  
-pip3 install "python-telegram-bot[job-queue]"   
+pip install requests yfinance pytz pandas_market_calendars python-dotenv pillow "python-telegram-bot[job-queue]"
  
 
 📌 3. 환경 변수 설정 (.env 파일 생성)
