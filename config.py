@@ -31,7 +31,8 @@ class ConfigManager:
             "SEED_CFG": "data/seed_config.json",         
             "COMPOUND_CFG": "data/compound_config.json",
             "VERSION_CFG": "data/version_config.json",
-            "REVERSE_CFG": "data/reverse_config.json"
+            "REVERSE_CFG": "data/reverse_config.json",
+            "BB_LOWER": "data/bb_lower.json" 
         }
         
         self.DEFAULT_SEED = {"SOXL": 6720.0, "TQQQ": 6720.0}
@@ -227,7 +228,6 @@ class ConfigManager:
 
     def set_reverse_state(self, ticker, is_active, day_count, exit_target=0.0, last_update_date=None):
         if last_update_date is None:
-            # 🚀 [V18.2 패치] 기준 시간을 KST에서 EST(미동부)로 변경하여 자정 넘김 타임 패러독스 완벽 차단
             est = pytz.timezone('US/Eastern')
             last_update_date = datetime.datetime.now(est).strftime('%Y-%m-%d')
             
@@ -238,7 +238,6 @@ class ConfigManager:
     def update_reverse_day_if_needed(self, ticker):
         state = self.get_reverse_state(ticker)
         if state.get("is_active"):
-            # 🚀 [V18.2 패치] KST(한국시간) 자정을 넘겨 조회하더라도 동일한 미장 세션이라면 날짜가 증가하지 않도록 EST(미동부) 기준으로 판단합니다.
             est = pytz.timezone('US/Eastern')
             now_est = datetime.datetime.now(est)
             today_est_str = now_est.strftime('%Y-%m-%d')
@@ -415,6 +414,15 @@ class ConfigManager:
             for k in keys_to_delete:
                 del locks[k]
             self._save_json(self.FILES["LOCKS"], locks)
+
+    # 🦇 [V18.10 패치] 볼린저 밴드 하한선 캐싱 변수 추가
+    def get_daily_bb_lower(self, ticker):
+        return float(self._load_json(self.FILES["BB_LOWER"], {}).get(ticker, 0.0))
+
+    def set_daily_bb_lower(self, ticker, value):
+        d = self._load_json(self.FILES["BB_LOWER"], {})
+        d[ticker] = float(value)
+        self._save_json(self.FILES["BB_LOWER"], d)
     
     def get_seed(self, t):
         return float(self._load_json(self.FILES["SEED_CFG"], self.DEFAULT_SEED).get(t, 6720.0))

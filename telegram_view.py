@@ -187,6 +187,11 @@ class TelegramView:
                 body_msg += f"⚙️ 🌟 <b>5일선 별지점</b>: ${t_info['star_price']:.2f}\n"
             else:
                 body_msg += f"⚙️ 🎯 {t_info['target']}% | ⭐ {t_info['star_pct']}% | 🏎️가속 {t_info['turbo_txt']}\n"
+                
+            # 🦇 [V18.12 패치] 볼린저 밴드 하한선 값을 화면에 추가 출력
+            bb_lower = t_info.get('bb_lower', 0.0)
+            if bb_lower > 0:
+                body_msg += f"📉 <b>하단 스나이퍼 대기선 (BB): ${bb_lower:.2f}</b>\n"
             
             body_msg += f"📋 <b>[주문 계획 - {proc_status}]</b>\n"
             

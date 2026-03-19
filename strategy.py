@@ -11,10 +11,42 @@ class InfiniteStrategy:
     def get_plan(self, ticker, current_price, avg_price, qty, prev_close, ma_5day=0.0, market_type="REG", available_cash=0, is_simulation=False, force_turbo_off=False):
         core_orders = []
         bonus_orders = []
-        smart_core_orders = []   # ★ [V17] 스나이퍼 성공 시 발동할 스마트 관망 매수(필수)
-        smart_bonus_orders = []  # ★ [V17] 스나이퍼 성공 시 발동할 스마트 관망 줍줍(보너스)
+        smart_core_orders = []   
+        smart_bonus_orders = []  
         process_status = "" 
         
+        # ==========================================================
+        # 🛡️ [V18.13 패치] KIS 자전거래(Wash-Trade) 원천 차단 방어벽 엔진
+        # ==========================================================
+        def apply_wash_trade_shield(c_orders, b_orders, sc_orders, sb_orders):
+            all_o = c_orders + b_orders + sc_orders + sb_orders
+            
+            # 1. MOC 매도 존재 여부 파악 (자전거래 유발의 핵심 주범)
+            has_sell_moc = any(o['type'] in ['MOC', 'MOO'] and o['side'] == 'SELL' for o in all_o)
+            
+            # 2. 가장 싼 매도 가격 파악 (가격 역전 검사용)
+            s_prices = [o['price'] for o in all_o if o['side'] == 'SELL' and o['price'] > 0]
+            min_s = min(s_prices) if s_prices else 0.0
+
+            def _clean(lst):
+                res = []
+                for o in lst:
+                    if o['side'] == 'BUY':
+                        # [차단 1] MOC 매도가 있는데 LOC/MOC 매수를 하려고 하면? 즉시 폐기!
+                        if has_sell_moc and o['type'] in ['LOC', 'MOC']: 
+                            continue 
+                        
+                        # [차단 2] 매수 가격이 매도 가격보다 높거나 같으면? 하극상 교정!
+                        if min_s > 0 and o['price'] >= min_s:
+                            o['price'] = round(min_s - 0.01, 2)
+                            if "🛡️" not in o['desc']: 
+                                o['desc'] = f"🛡️교정_{o['desc'].replace('🦇', '').replace('🧹', '')}"
+                    res.append(o)
+                return res
+
+            return _clean(c_orders), _clean(b_orders), _clean(sc_orders), _clean(sb_orders)
+        # ==========================================================
+
         other_locked_cash = self.cfg.get_total_locked_cash(exclude_ticker=ticker)
         real_available_cash = max(0, available_cash - other_locked_cash)
         
@@ -129,6 +161,8 @@ class InfiniteStrategy:
                 if market_type == "REG":
                     self.cfg.set_reverse_state(ticker, True, rev_day, exit_target)
                         
+                # 🛡️ 방어벽 가동
+                core_orders, bonus_orders, smart_core_orders, smart_bonus_orders = apply_wash_trade_shield(core_orders, bonus_orders, smart_core_orders, smart_bonus_orders)        
                 orders = core_orders + bonus_orders
                 return {"orders": orders, "core_orders": core_orders, "bonus_orders": bonus_orders, "smart_core_orders": [], "smart_bonus_orders": [], "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
 
@@ -240,6 +274,9 @@ class InfiniteStrategy:
 
             if target_price > 0:
                 core_orders.append({"side": "SELL", "price": target_price, "qty": r_qty, "type": "LIMIT", "desc": "🎯목표익절"})
+
+            # 🛡️ 방어벽 가동 (최종 리턴 전 무조건 거름망 통과)
+            core_orders, bonus_orders, smart_core_orders, smart_bonus_orders = apply_wash_trade_shield(core_orders, bonus_orders, smart_core_orders, smart_bonus_orders)
 
             orders = core_orders + bonus_orders
             return {

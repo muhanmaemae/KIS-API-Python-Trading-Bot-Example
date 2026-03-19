@@ -86,9 +86,8 @@ class TelegramController:
     async def cmd_v17(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_admin(update): return
         
-        # 🛡️ [V18.6 패치] 시크릿 자물쇠 로직 추가
         if os.getenv("SECRET_MODE") != "ON":
-            return # .env에 설정이 없으면 철저하게 무시 (읽씹)
+            return 
 
         args = context.args
         if not args:
@@ -107,9 +106,8 @@ class TelegramController:
     async def cmd_v4(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_admin(update): return
         
-        # 🛡️ [V18.6 패치] 시크릿 자물쇠 로직 추가
         if os.getenv("SECRET_MODE") != "ON":
-            return # .env에 설정이 없으면 철저하게 무시 (읽씹)
+            return 
 
         for t in self.cfg.get_active_tickers():
             self.cfg.set_version(t, "V14")
@@ -153,6 +151,9 @@ class TelegramController:
             seed = self.cfg.get_seed(t)
             ver = self.cfg.get_version(t)
             
+            # 🦇 [V18.11 패치] 볼린저 밴드 하한선 값을 config에서 꺼내와서 뷰어에 전달할 데이터에 포함시킵니다.
+            bb_lower = self.cfg.get_daily_bb_lower(t)
+            
             ticker_data_list.append({
                 'ticker': t, 'version': ver, 't_val': plan.get('t_val', 0.0), 'split': split, 'curr': curr, 'avg': float(h['avg']), 'qty': int(h['qty']),
                 'profit_amt': (curr - float(h['avg'])) * int(h['qty']) if int(h['qty']) > 0 else 0, 
@@ -162,7 +163,8 @@ class TelegramController:
                 'seed': seed, 'one_portion': plan.get('one_portion', 0.0), 'plan': plan,
                 'is_locked': self.cfg.check_lock(t, "REG") or self.cfg.check_lock(t, "SNIPER"), 'mode': "REG",
                 'is_reverse': plan.get('is_reverse', False), 'star_price': plan.get('star_price', 0.0),
-                'escrow': self.cfg.get_escrow_cash(t) 
+                'escrow': self.cfg.get_escrow_cash(t),
+                'bb_lower': bb_lower # 👈 여기에 값을 추가했습니다!
             })
             total_buy_needed += sum(o['price']*o['qty'] for o in plan['orders'] if o['side']=='BUY')
 
