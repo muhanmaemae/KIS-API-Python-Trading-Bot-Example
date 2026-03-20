@@ -132,8 +132,9 @@ class InfiniteStrategy:
 
                 if rev_day == 1 or is_emergency_cash_needed:
                     process_status = "🩸리버스(긴급수혈)" if is_emergency_cash_needed else "🚨리버스(1일차)"
+                    # 🦇 [원상복구] 대표님의 오리지널 무매 룰 적용: 1일차/긴급수혈은 무조건 MOC 매도로 확정 현금 창출!
                     if sell_qty > 0:
-                        desc_str = "🩸수혈매도(MOC)" if is_emergency_cash_needed else "🛡️의무매도"
+                        desc_str = "🩸수혈매도(MOC)" if is_emergency_cash_needed else "🛡️의무매도(MOC)"
                         core_orders.append({"side": "SELL", "price": 0, "qty": sell_qty, "type": "MOC", "desc": desc_str})
                 else:
                     process_status = f"🔄리버스({rev_day}일차)"
@@ -217,73 +218,4 @@ class InfiniteStrategy:
                             standard_buy_qty += q_star
 
             if one_portion_amt > 0 and (is_simulation or not is_money_short):
-                base_qty_for_jupjup = standard_buy_qty if standard_buy_qty > 0 else N
-                if base_qty_for_jupjup == 0: base_qty_for_jupjup = 1
-                for i in range(1, 6):
-                    target_qty = base_qty_for_jupjup + i 
-                    raw_jup_price = self._floor(one_portion_amt / target_qty)
-                    capped_jup_price = min(raw_jup_price, safe_ceiling - 0.01)
-                    jup_price = round(capped_jup_price, 2)
-                    if jup_price > 0:
-                        bonus_orders.append({"side": "BUY", "price": jup_price, "qty": 1, "type": "LOC", "desc": f"🧹줍줍({i})" })
-
-            # ==========================================================
-            # ★ [플랜 B] V17 전용: 스나이퍼 성공 시 작동할 '스마트 관망 매수' 장전
-            # ==========================================================
-            if version == "V17" and can_buy:
-                smart_base_qty = 0
-                if t_val < (split / 2):
-                    q_avg_smart = math.floor(one_portion_amt / p_avg) if p_avg > 0 else 0
-                    if q_avg_smart > 0:
-                        smart_core_orders.append({"side": "BUY", "price": p_avg, "qty": q_avg_smart, "type": "LOC", "desc": "🦇관망평단매수"})
-                        smart_base_qty = q_avg_smart
-                else:
-                    q_star_smart = math.floor(one_portion_amt / p_star) if p_star > 0 else 0
-                    if q_star_smart > 0:
-                        smart_core_orders.append({"side": "BUY", "price": p_star, "qty": q_star_smart, "type": "LOC", "desc": "🦇유지별값매수"})
-                        smart_base_qty = q_star_smart
-
-                if one_portion_amt > 0 and (is_simulation or not is_money_short):
-                    base_qty_for_smart_jupjup = smart_base_qty if smart_base_qty > 0 else N
-                    if base_qty_for_smart_jupjup == 0: base_qty_for_smart_jupjup = 1
-                    for i in range(1, 6):
-                        target_qty = base_qty_for_smart_jupjup + i 
-                        raw_jup_price = self._floor(one_portion_amt / target_qty)
-                        capped_jup_price = min(raw_jup_price, safe_ceiling - 0.01)
-                        jup_price = round(capped_jup_price, 2)
-                        if jup_price > 0:
-                            smart_bonus_orders.append({"side": "BUY", "price": jup_price, "qty": 1, "type": "LOC", "desc": f"🦇관망줍줍({i})" })
-
-            # ==========================================================
-            # 방어 및 익절 (매도)
-            # ==========================================================
-            q_qty = math.ceil(qty / 4)
-            r_qty = qty - q_qty 
-
-            buy_orders_exist = (len([o for o in core_orders if o['side']=='BUY']) > 0)
-            force_moc = is_last_lap or (is_money_short and not buy_orders_exist)
-            
-            if force_moc:
-                core_orders.append({"side": "SELL", "price": 0, "qty": q_qty, "type": "MOC", "desc": "🛡️쿼터MOC"})
-            else:
-                if star_price > 0:
-                    if version == "V17":
-                        core_orders.append({"side": "SELL", "price": star_price, "qty": q_qty, "type": "LOC", "desc": "🦇시크릿방어"})
-                    else:
-                        core_orders.append({"side": "SELL", "price": star_price, "qty": q_qty, "type": "LOC", "desc": "🌟쿼터매도"})
-
-            if target_price > 0:
-                core_orders.append({"side": "SELL", "price": target_price, "qty": r_qty, "type": "LIMIT", "desc": "🎯목표익절"})
-
-            # 🛡️ 방어벽 가동 (최종 리턴 전 무조건 거름망 통과)
-            core_orders, bonus_orders, smart_core_orders, smart_bonus_orders = apply_wash_trade_shield(core_orders, bonus_orders, smart_core_orders, smart_bonus_orders)
-
-            orders = core_orders + bonus_orders
-            return {
-                "orders": orders, "core_orders": core_orders, "bonus_orders": bonus_orders, 
-                "smart_core_orders": smart_core_orders, "smart_bonus_orders": smart_bonus_orders, 
-                "t_val": t_val, "one_portion": one_portion_amt, "process_status": process_status, 
-                "is_reverse": False, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash
-            }
-            
-        return {"orders": [], "core_orders": [], "bonus_orders": [], "smart_core_orders": [], "smart_bonus_orders": [], "t_val": t_val, "one_portion": one_portion_amt, "process_status": "대기", "is_reverse": is_reverse, "star_price": star_price, "star_ratio": star_ratio, "real_cash_used": real_available_cash}
+                base_qty_for_
