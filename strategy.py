@@ -129,7 +129,8 @@ class InfiniteStrategy:
                 if rev_day == 1 or is_emergency_cash_needed:
                     process_status = "🩸리버스(긴급수혈)" if is_emergency_cash_needed else "🚨리버스(1일차)"
                     if sell_qty > 0:
-                        desc_str = "🩸수혈매도(MOC)" if is_emergency_cash_needed else "🛡️의무매도(MOC)"
+                        # 🛡️ [V19.7] 불필요한 (MOC) 중복 텍스트 제거
+                        desc_str = "🩸수혈매도" if is_emergency_cash_needed else "🛡️의무매도"
                         core_orders.append({"side": "SELL", "price": 0, "qty": sell_qty, "type": "MOC", "desc": desc_str})
                 else:
                     process_status = f"🔄리버스({rev_day}일차)"
