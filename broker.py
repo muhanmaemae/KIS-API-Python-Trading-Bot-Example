@@ -468,3 +468,17 @@ class KoreaInvestmentBroker:
                 
         ledger_records.reverse()
         return ledger_records, final_qty, final_avg
+
+    # 🦇 [V19.9] 야후 파이낸스 최근 액면분할/병합 내역 스캔 엔진 추가
+    def get_recent_stock_split(self, ticker, last_date_str):
+        try:
+            stock = yf.Ticker(ticker)
+            splits = stock.splits
+            if splits is not None and not splits.empty:
+                for split_date_dt, ratio in splits.items():
+                    split_date = split_date_dt.strftime('%Y-%m-%d')
+                    if last_date_str == "" or split_date > last_date_str:
+                        return float(ratio), split_date
+        except Exception as e:
+            print(f"⚠️ [야후 파이낸스] 액면분할 조회 에러: {e}")
+        return 0.0, ""

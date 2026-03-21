@@ -17,6 +17,11 @@ try:
 except ImportError:
     VERSION_ARCHIVE = []
 
+# ✨ V19.9 버전 업데이트 반영
+VERSION_HISTORY.append(
+    "V19.9 [2026.03.21] 액면분할/병합 완전 자동화 엔진 탑재 (✨자동모으기님 제안): 야후 파이낸스(yfinance) 분할 내역(Splits) 연동을 통해 장부 동기화 시 신규 액면분할 이벤트를 자동 감지. 중복 적용 방지용 메모리(split_history.json)를 도입하여 관리자의 개입 없이 장부 수량과 평단가를 100% 무인 자동 교정하는 진정한 방치형 로직 완성 (수정: config, broker, telegram_bot)"
+)
+
 class ConfigManager:
     def __init__(self):
         self.FILES = {
@@ -34,7 +39,8 @@ class ConfigManager:
             "VERSION_CFG": "data/version_config.json",
             "REVERSE_CFG": "data/reverse_config.json",
             "BB_LOWER": "data/bb_lower.json",
-            "SNIPER_CFG": "data/sniper_config.json" 
+            "SNIPER_CFG": "data/sniper_config.json",
+            "SPLIT_HISTORY": "data/split_history.json" # 🦇 [V19.9] 자동 분할 중복 적용 방지용 기억 장소 추가
         }
         
         self.DEFAULT_SEED = {"SOXL": 6720.0, "TQQQ": 6720.0}
@@ -73,6 +79,16 @@ class ConfigManager:
     def _save_file(self, filename, content):
         with open(filename, 'w') as f:
             f.write(str(content))
+
+    # 🦇 [V19.9] 해당 종목의 마지막 액면분할 적용 날짜 불러오기
+    def get_last_split_date(self, ticker):
+        return self._load_json(self.FILES["SPLIT_HISTORY"], {}).get(ticker, "")
+
+    # 🦇 [V19.9] 해당 종목의 액면분할 적용 완료 날짜 덮어쓰기
+    def set_last_split_date(self, ticker, date_str):
+        d = self._load_json(self.FILES["SPLIT_HISTORY"], {})
+        d[ticker] = date_str
+        self._save_json(self.FILES["SPLIT_HISTORY"], d)
 
     def get_ledger(self):
         return self._load_json(self.FILES["LEDGER"], [])

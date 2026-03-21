@@ -237,6 +237,19 @@ class TelegramController:
         self.sync_locks[ticker] = True 
         try:
             async with self.tx_lock:
+                
+                # 🦇 [V19.9] 액면분할/병합 자동 감지 및 백그라운드 소급 적용 엔진
+                last_split_date = self.cfg.get_last_split_date(ticker)
+                split_ratio, split_date = await asyncio.to_thread(self.broker.get_recent_stock_split, ticker, last_split_date)
+                
+                if split_ratio > 0.0 and split_date != "":
+                    # 신규 분할/병합 이벤트가 발견되면 즉시 장부 교정
+                    self.cfg.apply_stock_split(ticker, split_ratio)
+                    self.cfg.set_last_split_date(ticker, split_date)
+                    
+                    split_type = "액면분할" if split_ratio > 1.0 else "액면병합(역분할)"
+                    await context.bot.send_message(chat_id, f"✂️ <b>[{ticker}] 야후 파이낸스 {split_type} 자동 감지!</b>\n▫️ 감지된 비율: <b>{split_ratio}배</b> (발생일: {split_date})\n▫️ 봇이 기존 장부의 수량과 평단가를 100% 무인 자동 소급 조정 완료했습니다.", parse_mode='HTML')
+                    
                 _, holdings = self.broker.get_account_balance()
                 if holdings is None:
                     await context.bot.send_message(chat_id, f"❌ <b>[{ticker}] API 오류</b>\n잔고를 불러오지 못했습니다.", parse_mode='HTML')
@@ -719,7 +732,13 @@ class TelegramController:
                 if val <= 0: return await update.message.reply_text("❌ 오류: 액면 보정 비율은 0보다 커야 합니다.")
                 ticker = parts[2]
                 self.cfg.apply_stock_split(ticker, val)
-                await update.message.reply_text(f"✅ [{ticker}] 액면 보정 완료\n▫️ 모든 장부 기록이 {val}배 비율로 정밀하게 소급 조정되었습니다.")
+                
+                # 🦇 [V19.9] 수동 보정 시에도 꼬임 방지를 위해 오늘 날짜를 기억 장소에 강제 기록
+                est = pytz.timezone('US/Eastern')
+                today_str = datetime.datetime.now(est).strftime('%Y-%m-%d')
+                self.cfg.set_last_split_date(ticker, today_str)
+                
+                await update.message.reply_text(f"✅ [{ticker}] 수동 액면 보정 완료\n▫️ 모든 장부 기록이 {val}배 비율로 정밀하게 소급 조정되었습니다.")
                 
             elif state.startswith("CONF_SNIPER"):
                 if val < 0: return await update.message.reply_text("❌ 오류: 스나이퍼 타점은 0 이상이어야 합니다.")
