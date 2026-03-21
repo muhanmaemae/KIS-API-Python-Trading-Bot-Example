@@ -1,3 +1,7 @@
+# ==========================================================
+# [telegram_view.py]
+# ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
+# ==========================================================
 import os
 from PIL import Image, ImageDraw, ImageFont
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -188,12 +192,17 @@ class TelegramView:
             else:
                 body_msg += f"⚙️ 🎯 {t_info['target']}% | ⭐ {t_info['star_pct']}% | 🏎️가속 {t_info['turbo_txt']}\n"
                 
-            # 🦇 [V19.1 패치] 하이브리드 동적 하한선(Dynamic Floor) 시각화 UI 제안 C(초정밀 축약형) 적용
+            # 🎯 [V20.0 패치] 스나이퍼 V3 절대 평단가 뷰어 적용 (UI 간소화)
             if v_mode == "V17":
                 hybrid_target = t_info.get('hybrid_target', 0.0)
-                if hybrid_target > 0:
-                    sniper_pct = t_info.get('sniper_trigger', 9.0) # 기본값 대비
-                    trigger_reason = "BB" if t_info.get('trigger_reason') == "BB" else f"-{sniper_pct}%"
+                sniper_pct = t_info.get('sniper_trigger', 9.0)
+                trigger_reason = t_info.get('trigger_reason', '')
+                
+                if trigger_reason.startswith("🛑"):
+                    # 타겟가가 평단가보다 비싸서 관망할 때
+                    body_msg += f"📉 <b>{trigger_reason}</b>\n"
+                elif hybrid_target > 0:
+                    # 정상적으로 스나이퍼 대기 중일 때
                     body_msg += f"📉 <b>스나이퍼({trigger_reason}): ${hybrid_target:.2f} 이하 대기중</b>\n"
                 else:
                     body_msg += f"📉 <b>스나이퍼: 장전 대기 중</b>\n"
@@ -348,4 +357,3 @@ class TelegramView:
             [InlineKeyboardButton("💎 SOXL + TQQQ 통합", callback_data="TICKER:ALL")]
         ]
         return f"🔄 <b>[ 운용 종목 선택 ]</b>\n현재: <b>{', '.join(current_tickers)}</b>", InlineKeyboardMarkup(keyboard)
-

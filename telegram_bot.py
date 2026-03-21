@@ -148,9 +148,14 @@ class TelegramController:
                 prev_close = await asyncio.to_thread(self.broker.get_previous_close, t)
                 ma_5day = await asyncio.to_thread(self.broker.get_5day_ma, t)
                 
-                # 🎯 [V20.0] 불필요한 BB 하한가 조회 및 캐싱 코드 삭제 (지시서 출력 속도 향상)
                 actual_avg = float(h['avg']) if h['avg'] else 0.0
-                safe_prev_close = prev_close if prev_close else 0.0
+                
+                # 🎯 [V20.1 핫픽스] 주말(CLOSE)에는 KIS API의 '전일종가'가 목요일 종가에 머물러 있는 현상 방어. 
+                # 금요일 종가(curr)를 다가오는 월요일의 '전일종가'로 삼아 스나이퍼 타겟가를 정확하게 계산.
+                if status_code == "CLOSE" and curr > 0:
+                    safe_prev_close = curr
+                else:
+                    safe_prev_close = prev_close if prev_close else 0.0
                 
                 # 🎯 [V20.0] 스나이퍼 V3 (절대 평단가 기준) 타겟가 및 관망 여부 계산
                 sniper_pct = self.cfg.get_sniper_trigger(t)
@@ -181,8 +186,8 @@ class TelegramController:
                     'is_locked': is_already_ordered, 'mode': "REG",
                     'is_reverse': plan.get('is_reverse', False), 'star_price': plan.get('star_price', 0.0),
                     'escrow': self.cfg.get_escrow_cash(t),
-                    'bb_lower': 0.0,  # V3에서는 더 이상 사용하지 않음
-                    'hybrid_base': 0.0, # V3에서는 더 이상 사용하지 않음
+                    'bb_lower': 0.0,  
+                    'hybrid_base': 0.0, 
                     'hybrid_target': hybrid_target,
                     'trigger_reason': trigger_reason,
                     'sniper_trigger': sniper_pct
