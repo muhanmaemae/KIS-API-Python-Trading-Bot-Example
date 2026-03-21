@@ -41,6 +41,10 @@ class InfiniteStrategy:
                             o['price'] = round(min_s - 0.01, 2)
                             if "🛡️" not in o['desc']: 
                                 o['desc'] = f"🛡️교정_{o['desc'].replace('🦇', '').replace('🧹', '')}"
+                        
+                        # 🎯 [V20.2 핫픽스] 마이너스 호가 방어막 공통 적용 (자전거래 방패 내부에서도)
+                        o['price'] = max(0.01, o['price'])
+                            
                     res.append(o)
                 return res
 
@@ -93,7 +97,6 @@ class InfiniteStrategy:
             else: star_price = round(avg_price, 2)
 
             escrow_cash = self.cfg.get_escrow_cash(ticker)
-            # 🦇 [V19.10 핫픽스] 에스크로가 0일 때 리버스 무력화 방지 (기본 예산 할당)
             one_portion_amt = (escrow_cash / 4.0) if escrow_cash > 0 else base_portion
         else:
             star_price = self._ceil(avg_price * (1 + star_ratio)) if avg_price > 0 else 0
@@ -118,7 +121,8 @@ class InfiniteStrategy:
         if market_type == "REG":
             if qty == 0:
                 process_status = "✨새출발"
-                buy_price = round(self._ceil(base_price * 1.15) - 0.01, 2)
+                # 🎯 [V20.2 핫픽스] 마이너스 호가 하한선 방어
+                buy_price = max(0.01, round(self._ceil(base_price * 1.15) - 0.01, 2))
                 buy_qty = math.floor(one_portion_amt / buy_price) if buy_price > 0 else 0
                 if buy_qty > 0:
                     core_orders.append({"side": "BUY", "price": buy_price, "qty": buy_qty, "type": "LOC", "desc": "🆕새출발"})
@@ -127,22 +131,29 @@ class InfiniteStrategy:
 
             if is_reverse:
                 sell_divisor = 10 if split <= 20 else 20
-                sell_qty = math.floor(qty / sell_divisor) 
+                
+                # 🎯 [V20.2 핫픽스] 리버스 최소 4주 매도 보장 & 수량 부족 시 전량 청산
+                if qty < 4:
+                    sell_qty = qty # 4주도 안 남았으면 그냥 다 팔고 청산
+                else:
+                    sell_qty = max(4, math.floor(qty / sell_divisor)) 
 
                 is_emergency_cash_needed = (real_available_cash < base_price) and (rev_day > 1)
 
                 if rev_day == 1 or is_emergency_cash_needed:
                     process_status = "🩸리버스(긴급수혈)" if is_emergency_cash_needed else "🚨리버스(1일차)"
+                    
                     if sell_qty > 0:
-                        # 🛡️ [V19.7] 불필요한 (MOC) 중복 텍스트 제거
                         desc_str = "🩸수혈매도" if is_emergency_cash_needed else "🛡️의무매도"
+                        if qty < 4: desc_str = "💥잔량청산(수량부족)"
                         core_orders.append({"side": "SELL", "price": 0, "qty": sell_qty, "type": "MOC", "desc": desc_str})
                 else:
                     process_status = f"🔄리버스({rev_day}일차)"
                     buy_qty = 0
                     buy_price = 0
                     if one_portion_amt > 0 and star_price > 0:
-                        buy_price = round(star_price - 0.01, 2)
+                        # 🎯 [V20.2 핫픽스] 마이너스 호가 하한선 방어
+                        buy_price = max(0.01, round(star_price - 0.01, 2))
                         if buy_price > 0: 
                             buy_qty = math.floor(one_portion_amt / buy_price)
                             if buy_qty > 0:
@@ -156,7 +167,8 @@ class InfiniteStrategy:
                             target_qty = buy_qty + i 
                             raw_jup_price = self._floor(one_portion_amt / target_qty)
                             capped_jup_price = min(raw_jup_price, buy_price - 0.01)
-                            jup_price = round(capped_jup_price, 2)
+                            # 🎯 [V20.2 핫픽스] 마이너스 호가 하한선 방어
+                            jup_price = max(0.01, round(capped_jup_price, 2))
                             if jup_price > 0:
                                 bonus_orders.append({"side": "BUY", "price": jup_price, "qty": 1, "type": "LOC", "desc": f"🧹리버스줍줍({i})" })
                 
@@ -172,6 +184,10 @@ class InfiniteStrategy:
             elif t_val < (split / 2): process_status = "🌓전반전"
             else: process_status = "🌕후반전"
 
+            # 🎯 [V20.2 핫픽스] T값 비정상 폭주(수동 매수, 시드 오류) 감지 꼬리표
+            if t_val > (split * 1.1):
+                process_status = "🚨T값폭주(역산경고)"
+
             can_buy = not is_money_short and not is_last_lap
             is_turbo_active = False if force_turbo_off else self.cfg.get_turbo_mode()
             
@@ -181,17 +197,20 @@ class InfiniteStrategy:
                 if is_simulation or real_available_cash >= one_portion_amt:
                     ref_price = min(avg_price, prev_close)
                     raw_turbo = self._ceil(ref_price * 0.95) - 0.01
-                    turbo_price = round(min(raw_turbo, safe_ceiling - 0.01), 2)
+                    # 🎯 [V20.2 핫픽스] 마이너스 호가 하한선 방어
+                    turbo_price = max(0.01, round(min(raw_turbo, safe_ceiling - 0.01), 2))
                     turbo_qty = math.floor(one_portion_amt / turbo_price) if turbo_price > 0 else 0
                     if turbo_qty > 0:
                         core_orders.append({"side": "BUY", "price": turbo_price, "qty": turbo_qty, "type": "LOC", "desc": "🏎️가속매수"})
 
             standard_buy_qty = 0 
             N = math.floor(one_portion_amt / avg_price) if avg_price > 0 else 0
-            p_avg = round(min(self._ceil(avg_price) - 0.01, safe_ceiling - 0.01), 2)
+            # 🎯 [V20.2 핫픽스] 마이너스 호가 하한선 방어
+            p_avg = max(0.01, round(min(self._ceil(avg_price) - 0.01, safe_ceiling - 0.01), 2))
             
             if can_buy:
-                p_star = round(star_price - 0.01, 2)
+                # 🎯 [V20.2 핫픽스] 마이너스 호가 하한선 방어
+                p_star = max(0.01, round(star_price - 0.01, 2))
 
                 if t_val < (split / 2):
                     half_amt = one_portion_amt * 0.5
@@ -220,8 +239,10 @@ class InfiniteStrategy:
                     for i in range(1, 6):
                         jup_price = self._floor(one_portion_amt / (base_qty_for_jup + i))
                         capped_jup_price = round(min(jup_price, avg_price - 0.01), 2)
+                        # 🎯 [V20.2 핫픽스] 마이너스 호가 하한선 방어
                         if capped_jup_price > 0:
-                            bonus_orders.append({"side": "BUY", "price": capped_jup_price, "qty": 1, "type": "LOC", "desc": f"🧹줍줍({i})"})
+                            safe_jup_price = max(0.01, capped_jup_price)
+                            bonus_orders.append({"side": "BUY", "price": safe_jup_price, "qty": 1, "type": "LOC", "desc": f"🧹줍줍({i})"})
 
             if qty > 0:
                 q_qty = math.ceil(qty / 4)
@@ -239,8 +260,10 @@ class InfiniteStrategy:
                         for i in range(1, 6):
                             j_price = self._floor(one_portion_amt / (N + i))
                             c_j_price = round(min(j_price, p_avg - 0.01), 2)
+                            # 🎯 [V20.2 핫픽스] 마이너스 호가 하한선 방어
                             if c_j_price > 0:
-                                smart_bonus_orders.append({"side": "BUY", "price": c_j_price, "qty": 1, "type": "LOC", "desc": f"🧹스마트줍줍({i})"})
+                                safe_c_j_price = max(0.01, c_j_price)
+                                smart_bonus_orders.append({"side": "BUY", "price": safe_c_j_price, "qty": 1, "type": "LOC", "desc": f"🧹스마트줍줍({i})"})
                 else:
                     if star_price > 0 and q_qty > 0:
                         core_orders.append({"side": "SELL", "price": star_price, "qty": q_qty, "type": "LOC", "desc": "🌟별값매도"})

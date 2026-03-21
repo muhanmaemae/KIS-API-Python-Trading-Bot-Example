@@ -38,7 +38,6 @@ class TelegramView:
             "<i>┗ 🚨 수동 닻 올리기: 예산 부족으로 리버스 진입 후 외화RP매도 등 예수금을 추가 입금하셨다면, 이 메뉴에서 반드시 '리버스 강제 해제'를 눌러 닻을 올려주세요!</i>"
         )
 
-    # 🎯 [V20.2 핫픽스] 리셋 메뉴 하드코딩 제거: 현재 운용 중인 종목만 동적으로 버튼 생성
     def get_reset_menu(self, active_tickers):
         msg = (
             "🛠️ <b>[ 시스템 안전 통제실 ]</b>\n"
@@ -46,17 +45,13 @@ class TelegramView:
         )
         keyboard = []
         
-        # 1. 매매 잠금 해제 버튼 생성
         for t in active_tickers:
             keyboard.append([InlineKeyboardButton(f"🔓 [{t}] 매매 잠금 해제", callback_data=f"RESET:LOCK:{t}")])
             
-        # 2. 리버스/장부 초기화 버튼 생성
         for t in active_tickers:
             keyboard.append([InlineKeyboardButton(f"🚨 [{t}] 리버스/장부 초기화", callback_data=f"RESET:REV:{t}")])
             
-        # 3. 취소 버튼
         keyboard.append([InlineKeyboardButton("❌ 취소 및 닫기", callback_data="RESET:CANCEL")])
-        
         return msg, InlineKeyboardMarkup(keyboard)
 
     def get_reset_confirm_menu(self, ticker):
@@ -155,6 +150,13 @@ class TelegramView:
             t = t_info['ticker']
             v_mode = t_info['version']
             
+            # 🎯 [V20.3 핫픽스] 뷰어에서 직접 T값 1.1배 초과 여부를 감지하여 대형 경고문구 삽입!
+            if t_info['t_val'] > (t_info['split'] * 1.1):
+                body_msg += f"⚠️ <b>[🚨 시스템 긴급 경고: 비정상 T값 폭주 감지!]</b>\n"
+                body_msg += f"🔎 현재 T값(<b>{t_info['t_val']:.4f}T</b>)이 설정된 분할수(<b>{int(t_info['split'])}분할</b>)를 초과했습니다!\n"
+                body_msg += f"💡 <b>원인 역산 추정:</b> 수동 매수로 수량이 급증했거나, '/seed' 시드머니 설정이 대폭 축소되었습니다.\n"
+                body_msg += f"🛡️ <b>가동 조치:</b> 마이너스 호가 차단용 절대 하한선($0.01) 방어막 가동 중!\n\n"
+
             if v_mode == "V17":
                 v_mode_display = "V17 시크릿"
                 main_icon = "🦇"
