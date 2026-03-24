@@ -192,9 +192,14 @@ class TelegramController:
                 is_rev = plan.get('is_reverse', False)
                 secret_quarter_target = 0.0
                 
+               # 🚨 [V21.4 수정] V17 모드 전/후반전 타점 실제 트리거(방아쇠) 100% 동기화
                 if ver == "V17" and actual_qty > 0:
-                    secret_quarter_target = math.ceil(actual_avg * 1.0025 * 100) / 100.0
-                
+                    if is_rev:
+                        secret_quarter_target = math.ceil(actual_avg * 1.0025 * 100) / 100.0
+                    else:
+                        is_first_half = t_val < (split / 2)
+                        secret_quarter_target = plan.get('star_price', 0.0) if is_first_half else math.ceil(actual_avg * 1.0025 * 100) / 100.0
+
                 ticker_data_list.append({
                     'ticker': t, 'version': ver, 't_val': t_val, 'split': split, 'curr': curr, 'avg': actual_avg, 'qty': actual_qty,
                     'profit_amt': (curr - actual_avg) * actual_qty if actual_qty > 0 else 0, 

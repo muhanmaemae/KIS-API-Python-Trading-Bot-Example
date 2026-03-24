@@ -58,11 +58,27 @@ def is_dst_active():
 def get_target_hour():
     return (17, "🌞 서머타임 적용(여름)") if is_dst_active() else (18, "❄️ 서머타임 해제(겨울)")
 
+# 🚨 [V21.4 핫픽스] 시장 개장 판별 강력 교정 (라이브러리 오류 방어)
 def is_market_open():
-    est = pytz.timezone('US/Eastern')
-    today = datetime.datetime.now(est).date()
-    nyse = mcal.get_calendar('NYSE')
-    return not nyse.schedule(start_date=today, end_date=today).empty
+    try:
+        est = pytz.timezone('US/Eastern')
+        today = datetime.datetime.now(est)
+        # 1차: 명확한 주말은 무조건 휴장 처리 (0:월 ~ 6:일)
+        if today.weekday() >= 5: 
+            return False
+            
+        nyse = mcal.get_calendar('NYSE')
+        schedule = nyse.schedule(start_date=today.date(), end_date=today.date())
+        
+        if not schedule.empty:
+            return True
+        else:
+            # 달력 데이터가 아예 비어있으면 진짜 공휴일
+            return False
+    except Exception as e:
+        # 패키지 구버전 등 달력 조회 에러 시, 평일이면 무조건 개장으로 강제 처리
+        logging.error(f"⚠️ 달력 라이브러리 에러 발생. 평일이므로 강제 개장 처리합니다: {e}")
+        return True
 
 def get_budget_allocation(cash, tickers, cfg):
     sorted_tickers = sorted(tickers, key=lambda x: 0 if x == "SOXL" else (1 if x == "TQQQ" else 2))
@@ -151,16 +167,27 @@ async def scheduled_force_reset(context):
     now = datetime.datetime.now(kst)
     target_hour, _ = get_target_hour()
     
-    if now.hour != target_hour: return
-    if not is_market_open(): return
+    # 🚨 [V21.4 핫픽스] 0.001초 미세 오차(Jitter) 방어선 구축 (±2분 관용 타임)
+    now_minutes = now.hour * 60 + now.minute
+    target_minutes = target_hour * 60
     
-    app_data = context.job.data
-    app_data['cfg'].reset_locks()
-    
-    for t in app_data['cfg'].get_active_tickers():
-        app_data['cfg'].increment_reverse_day(t)
+    if abs(now_minutes - target_minutes) > 2 and abs(now_minutes - target_minutes) < (24*60 - 2):
+        return
         
-    await context.bot.send_message(chat_id=context.job.chat_id, text=f"🔓 <b>[{target_hour}:00] 시스템 초기화 완료 (매매 잠금 해제 & 스나이퍼 장전 & 리버스 카운트 누적)</b>", parse_mode='HTML')
+    if not is_market_open():
+        await context.bot.send_message(chat_id=context.job.chat_id, text="⛔ <b>오늘은 미국 증시 휴장일입니다. 시스템 초기화 및 통제권을 건너뜁니다.</b>", parse_mode='HTML')
+        return
+    
+    try:
+        app_data = context.job.data
+        app_data['cfg'].reset_locks()
+        
+        for t in app_data['cfg'].get_active_tickers():
+            app_data['cfg'].increment_reverse_day(t)
+            
+        await context.bot.send_message(chat_id=context.job.chat_id, text=f"🔓 <b>[{target_hour}:00] 시스템 초기화 완료 (매매 잠금 해제 & 스나이퍼 장전 & 리버스 카운트 누적)</b>", parse_mode='HTML')
+    except Exception as e:
+        await context.bot.send_message(chat_id=context.job.chat_id, text=f"🚨 <b>시스템 초기화 중 에러 발생:</b> {e}", parse_mode='HTML')
 
 async def scheduled_premarket_monitor(context):
     if not is_market_open(): return
@@ -175,41 +202,57 @@ async def scheduled_premarket_monitor(context):
 
     cfg, broker, strategy, tx_lock = app_data['cfg'], app_data['broker'], app_data['strategy'], app_data['tx_lock']
 
-    async with tx_lock:
-        _, holdings = broker.get_account_balance()
-        if holdings is None: return 
+    # 🚨 [V21.4 핫픽스] 비동기 병목(Deadlock) 타임아웃 족쇄 
+    async def _do_premarket():
+        async with tx_lock:
+            _, holdings = broker.get_account_balance()
+            if holdings is None: return 
 
-        for t in cfg.get_active_tickers():
-            h = holdings.get(t, {'qty': 0, 'avg': 0})
-            if int(h['qty']) == 0: continue 
+            for t in cfg.get_active_tickers():
+                h = holdings.get(t, {'qty': 0, 'avg': 0})
+                if int(h['qty']) == 0: continue 
 
-            curr_p = await asyncio.to_thread(broker.get_current_price, t)
-            prev_c = await asyncio.to_thread(broker.get_previous_close, t)
-            
-            plan = strategy.get_plan(t, curr_p, float(h['avg']), int(h['qty']), prev_c, market_type="PRE_CHECK")
-            
-            if plan['orders']:
-                msg = f"🌅 <b>[{t}] 대박! 프리마켓 목표 달성 🎉</b>\n⚡ 전량 익절 주문을 실행합니다!"
-                broker.cancel_all_orders_safe(t)
-                for o in plan['orders']:
-                    res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
-                    err_msg = res.get('msg1')
-                    is_success = res.get('rt_cd') == '0'
-                    msg += f"\n└ {o['desc']}: {'✅' if is_success else f'❌({err_msg})'}"
-                    await asyncio.sleep(0.2) 
-                await context.bot.send_message(chat_id=context.job.chat_id, text=msg, parse_mode='HTML')
+                curr_p = await asyncio.to_thread(broker.get_current_price, t)
+                prev_c = await asyncio.to_thread(broker.get_previous_close, t)
+                
+                plan = strategy.get_plan(t, curr_p, float(h['avg']), int(h['qty']), prev_c, market_type="PRE_CHECK")
+                
+                if plan['orders']:
+                    msg = f"🌅 <b>[{t}] 대박! 프리마켓 목표 달성 🎉</b>\n⚡ 전량 익절 주문을 실행합니다!"
+                    broker.cancel_all_orders_safe(t)
+                    for o in plan['orders']:
+                        res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
+                        err_msg = res.get('msg1')
+                        is_success = res.get('rt_cd') == '0'
+                        msg += f"\n└ {o['desc']}: {'✅' if is_success else f'❌({err_msg})'}"
+                        await asyncio.sleep(0.2) 
+                    await context.bot.send_message(chat_id=context.job.chat_id, text=msg, parse_mode='HTML')
+
+    try:
+        await asyncio.wait_for(_do_premarket(), timeout=45.0)
+    except asyncio.TimeoutError:
+        logging.warning("⚠️ 프리마켓 감시 중 통신 지연으로 1회 건너뜀 (Deadlock 방어)")
+    except Exception as e:
+        logging.error(f"🚨 프리마켓 모니터 에러: {e}")
 
 async def scheduled_sniper_monitor(context):
     if not is_market_open(): return
     
     est = pytz.timezone('US/Eastern')
     now_est = datetime.datetime.now(est)
-    nyse = mcal.get_calendar('NYSE')
-    schedule = nyse.schedule(start_date=now_est.date(), end_date=now_est.date())
-    if schedule.empty: return
     
-    market_open = schedule.iloc[0]['market_open'].astimezone(est)
-    market_close = schedule.iloc[0]['market_close'].astimezone(est)
+    try:
+        nyse = mcal.get_calendar('NYSE')
+        schedule = nyse.schedule(start_date=now_est.date(), end_date=now_est.date())
+        if schedule.empty: return
+        
+        market_open = schedule.iloc[0]['market_open'].astimezone(est)
+        market_close = schedule.iloc[0]['market_close'].astimezone(est)
+    except Exception:
+        if now_est.weekday() < 5:
+            market_open = now_est.replace(hour=9, minute=30, second=0, microsecond=0)
+            market_close = now_est.replace(hour=16, minute=0, second=0, microsecond=0)
+        else: return
     
     pre_start = market_open.replace(hour=4, minute=0)
     start_monitor = pre_start + datetime.timedelta(minutes=1)
@@ -228,241 +271,147 @@ async def scheduled_sniper_monitor(context):
         target_cache.clear()
         target_cache['date'] = today_est_str
     
-    async with tx_lock:
-        cash, holdings = broker.get_account_balance()
-        if holdings is None: return
-        
-        sorted_tickers, allocated_cash, force_turbo_off = get_budget_allocation(cash, cfg.get_active_tickers(), cfg)
-        
-        for t in cfg.get_active_tickers():
-            if cfg.get_version(t) != "V17": continue
+    # 🚨 [V21.4 핫픽스] 비동기 병목(Deadlock) 타임아웃 족쇄 
+    async def _do_sniper():
+        async with tx_lock:
+            cash, holdings = broker.get_account_balance()
+            if holdings is None: return
             
-            lock_buy = cfg.check_lock(t, "SNIPER_BUY")
-            lock_sell = cfg.check_lock(t, "SNIPER_SELL")
+            sorted_tickers, allocated_cash, force_turbo_off = get_budget_allocation(cash, cfg.get_active_tickers(), cfg)
             
-            if lock_buy and lock_sell:
-                continue
-            
-            h = holdings.get(t, {'qty': 0, 'avg': 0})
-            qty = int(h['qty'])
-            avg_price = float(h['avg'])
-            if qty == 0: continue
-            
-            curr_p = await asyncio.to_thread(broker.get_current_price, t)
-            prev_c = await asyncio.to_thread(broker.get_previous_close, t)
-            if curr_p <= 0: continue
-            
-            idx_ticker = "SOXX" if t == "SOXL" else "QQQ"
-            if t not in target_cache:
-                weight = cfg.get_sniper_multiplier(t)
-                tgt = await asyncio.to_thread(broker.get_dynamic_sniper_target, idx_ticker, weight)
-                target_cache[t] = tgt if tgt is not None else (9.0 if t=="SOXL" else 5.0) 
+            for t in cfg.get_active_tickers():
+                if cfg.get_version(t) != "V17": continue
+                
+                lock_buy = cfg.check_lock(t, "SNIPER_BUY")
+                lock_sell = cfg.check_lock(t, "SNIPER_SELL")
+                
+                if lock_buy and lock_sell:
+                    continue
+                
+                h = holdings.get(t, {'qty': 0, 'avg': 0})
+                qty = int(h['qty'])
+                avg_price = float(h['avg'])
+                if qty == 0: continue
+                
+                curr_p = await asyncio.to_thread(broker.get_current_price, t)
+                prev_c = await asyncio.to_thread(broker.get_previous_close, t)
+                if curr_p <= 0: continue
+                
+                idx_ticker = "SOXX" if t == "SOXL" else "QQQ"
+                if t not in target_cache:
+                    weight = cfg.get_sniper_multiplier(t)
+                    tgt = await asyncio.to_thread(broker.get_dynamic_sniper_target, idx_ticker, weight)
+                    target_cache[t] = tgt if tgt is not None else (9.0 if t=="SOXL" else 5.0) 
 
-            sniper_pct = target_cache[t]
-            raw_target_price = prev_c * (1 - (sniper_pct / 100.0))
-            target_buy_price = math.floor(raw_target_price * 100) / 100.0
-            
-            is_sniper_armed = target_buy_price < avg_price
-            trigger_reason = f"-{sniper_pct}% 동적 방어선"
-            
-            # =========================================================================
-            # 1. 하방 스나이퍼 매수 (Intercept)
-            # =========================================================================
-            if not lock_buy and is_sniper_armed and target_buy_price > 0 and curr_p <= target_buy_price:
-                if cfg.get_secret_mode():
-                    is_rev = cfg.get_reverse_state(t).get("is_active", False)
-                    if is_rev: sniper_budget = cfg.get_escrow_cash(t) / 4.0
-                    else:
-                        split = cfg.get_split_count(t)
-                        sniper_budget = cfg.get_seed(t) / split if split > 0 else 0
-                    
-                    if sniper_budget < curr_p: continue 
+                sniper_pct = target_cache[t]
+                raw_target_price = prev_c * (1 - (sniper_pct / 100.0))
+                target_buy_price = math.floor(raw_target_price * 100) / 100.0
+                
+                is_sniper_armed = target_buy_price < avg_price
+                trigger_reason = f"-{sniper_pct}% 동적 방어선"
+                
+                # =========================================================================
+                # 1. 하방 스나이퍼 매수 (Intercept)
+                # =========================================================================
+                if not lock_buy and is_sniper_armed and target_buy_price > 0 and curr_p <= target_buy_price:
+                    if cfg.get_secret_mode():
+                        is_rev = cfg.get_reverse_state(t).get("is_active", False)
+                        if is_rev: sniper_budget = cfg.get_escrow_cash(t) / 4.0
+                        else:
+                            split = cfg.get_split_count(t)
+                            sniper_budget = cfg.get_seed(t) / split if split > 0 else 0
+                        
+                        if sniper_budget < curr_p: continue 
 
-                    await asyncio.to_thread(broker.cancel_targeted_orders, t, "BUY", "34")
-                    await asyncio.sleep(1.0)
-                    
-                    ask_price = await asyncio.to_thread(broker.get_ask_price, t)
-                    exec_price = ask_price if ask_price > 0 else curr_p
-                    rem_qty = math.floor(sniper_budget / exec_price)
-                    
-                    hunt_success = False
-                    actual_buy_price = exec_price
-                    
-                    for attempt in range(3):
-                        if rem_qty <= 0:
-                            hunt_success = True
-                            break
-
+                        await asyncio.to_thread(broker.cancel_targeted_orders, t, "BUY", "34")
+                        await asyncio.sleep(1.0)
+                        
                         ask_price = await asyncio.to_thread(broker.get_ask_price, t)
                         exec_price = ask_price if ask_price > 0 else curr_p
+                        rem_qty = math.floor(sniper_budget / exec_price)
                         
-                        res = broker.send_order(t, "BUY", rem_qty, exec_price, "LIMIT")
-                        odno = res.get('odno', '')
+                        hunt_success = False
+                        actual_buy_price = exec_price
                         
-                        if res.get('rt_cd') == '0' and odno:
-                            await asyncio.sleep(2.0)
-                            unfilled = await asyncio.to_thread(broker.get_unfilled_orders_detail, t)
-                            my_order = next((o for o in unfilled if o.get('odno') == odno), None)
-                            
-                            if not my_order:
-                                rem_qty = 0
+                        for attempt in range(3):
+                            if rem_qty <= 0:
                                 hunt_success = True
-                                actual_buy_price = exec_price
                                 break
-                            else:
-                                ord_qty = int(float(my_order.get('ord_qty', 0)))
-                                tot_ccld_qty = int(float(my_order.get('tot_ccld_qty', 0)))
-                                rem_qty = ord_qty - tot_ccld_qty
+
+                            ask_price = await asyncio.to_thread(broker.get_ask_price, t)
+                            exec_price = ask_price if ask_price > 0 else curr_p
+                            
+                            res = broker.send_order(t, "BUY", rem_qty, exec_price, "LIMIT")
+                            odno = res.get('odno', '')
+                            
+                            if res.get('rt_cd') == '0' and odno:
+                                await asyncio.sleep(2.0)
+                                unfilled = await asyncio.to_thread(broker.get_unfilled_orders_detail, t)
+                                my_order = next((o for o in unfilled if o.get('odno') == odno), None)
                                 
-                                await asyncio.to_thread(broker.cancel_order, t, odno)
-                                await asyncio.sleep(1.0)
+                                if not my_order:
+                                    rem_qty = 0
+                                    hunt_success = True
+                                    actual_buy_price = exec_price
+                                    break
+                                else:
+                                    ord_qty = int(float(my_order.get('ord_qty', 0)))
+                                    tot_ccld_qty = int(float(my_order.get('tot_ccld_qty', 0)))
+                                    rem_qty = ord_qty - tot_ccld_qty
+                                    
+                                    await asyncio.to_thread(broker.cancel_order, t, odno)
+                                    await asyncio.sleep(1.0)
+                            
+                            await asyncio.sleep(0.5)
                         
-                        await asyncio.sleep(0.5)
-                    
-                    if hunt_success:
-                        cfg.set_lock(t, "SNIPER_BUY") 
-                        msg = f"💥 <b>[{t}] V20.11 시크릿 모드 가로채기(Intercept) 명중!</b>\n"
-                        msg += f"📉 실시간 현재가(${curr_p:.2f})가 <b>[{trigger_reason}]</b>(${target_buy_price:.2f})을 터치했습니다!\n"
-                        msg += f"🎯 <b>매수 방어선을 해제하고 최적 단가 ${actual_buy_price:.2f}에 즉시 낚아채어 체결을 완료</b>했습니다!\n"
-                        msg += "🔫 당일 하방(매수) 스나이퍼 활동만을 종료하며, 상방(익절) 감시는 계속됩니다."
-                        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
+                        if hunt_success:
+                            cfg.set_lock(t, "SNIPER_BUY") 
+                            msg = f"💥 <b>[{t}] V20.11 시크릿 모드 가로채기(Intercept) 명중!</b>\n"
+                            msg += f"📉 실시간 현재가(${curr_p:.2f})가 <b>[{trigger_reason}]</b>(${target_buy_price:.2f})을 터치했습니다!\n"
+                            msg += f"🎯 <b>매수 방어선을 해제하고 최적 단가 ${actual_buy_price:.2f}에 즉시 낚아채어 체결을 완료</b>했습니다!\n"
+                            msg += "🔫 당일 하방(매수) 스나이퍼 활동만을 종료하며, 상방(익절) 감시는 계속됩니다."
+                            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
+                            continue
+
+                        now_ts = time.time()
+                        fail_history = app_data.setdefault('sniper_fail_ts', {})
+                        if now_ts - fail_history.get(t, 0) > 3600:
+                            msg = f"🛡️ <b>[{t}] V20.11 가로채기 덫 기습 실패 (1시간 쿨타임 진입)</b>\n"
+                            msg += f"📉 동적 방어선(${target_buy_price:.2f})에 3회 지정가 덫을 던졌으나 잔량이 남았습니다.\n"
+                            msg += f"🦇 매수 스나이퍼는 1시간 동안 숨을 죽이며, 취소했던 일반 방어 매수(LOC) 주문만 호가창에 정밀 복구합니다."
+                            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
+                            fail_history[t] = now_ts
+                        
+                        ma_5day = await asyncio.to_thread(broker.get_5day_ma, t)
+                        plan = strategy.get_plan(t, curr_p, avg_price, qty, prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off)
+                        
+                        for o in plan.get('core_orders', []) + plan.get('bonus_orders', []):
+                            if o['side'] == 'BUY':
+                                broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
+                                await asyncio.sleep(0.2)
+                                
                         continue
 
-                    now_ts = time.time()
-                    fail_history = app_data.setdefault('sniper_fail_ts', {})
-                    if now_ts - fail_history.get(t, 0) > 3600:
-                        msg = f"🛡️ <b>[{t}] V20.11 가로채기 덫 기습 실패 (1시간 쿨타임 진입)</b>\n"
-                        msg += f"📉 동적 방어선(${target_buy_price:.2f})에 3회 지정가 덫을 던졌으나 잔량이 남았습니다.\n"
-                        msg += f"🦇 매수 스나이퍼는 1시간 동안 숨을 죽이며, 취소했던 일반 방어 매수(LOC) 주문만 호가창에 정밀 복구합니다."
-                        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
-                        fail_history[t] = now_ts
-                    
-                    ma_5day = await asyncio.to_thread(broker.get_5day_ma, t)
-                    plan = strategy.get_plan(t, curr_p, avg_price, qty, prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off)
-                    
-                    for o in plan.get('core_orders', []) + plan.get('bonus_orders', []):
-                        if o['side'] == 'BUY':
-                            broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
-                            await asyncio.sleep(0.2)
-                            
-                    continue
-
-            # =========================================================================
-            # 2. 상방 스나이퍼 매도 (Jackpot)
-            # =========================================================================
-            target_pct_val = cfg.get_target_profit(t)
-            target_price = math.ceil(avg_price * (1 + target_pct_val / 100.0) * 100) / 100.0
-            
-            split = cfg.get_split_count(t)
-            t_val, _ = cfg.get_absolute_t_val(t, qty, avg_price)
-            
-            depreciation_factor = 2.0 / split if split > 0 else 0.1
-            star_ratio = (target_pct_val / 100.0) - ((target_pct_val / 100.0) * depreciation_factor * t_val)
-            star_price = math.ceil(avg_price * (1 + star_ratio) * 100) / 100.0
-            
-            if not lock_sell and curr_p >= target_price:
-                await asyncio.to_thread(broker.cancel_all_orders_safe, t, side="SELL")
-                await asyncio.sleep(1.0)
+                # =========================================================================
+                # 2. 상방 스나이퍼 매도 (Jackpot)
+                # =========================================================================
+                target_pct_val = cfg.get_target_profit(t)
+                target_price = math.ceil(avg_price * (1 + target_pct_val / 100.0) * 100) / 100.0
                 
-                rem_qty = qty
-                hunt_success = False
-                actual_sell_price = target_price
+                split = cfg.get_split_count(t)
+                t_val, _ = cfg.get_absolute_t_val(t, qty, avg_price)
                 
-                for attempt in range(3):
-                    if rem_qty <= 0:
-                        hunt_success = True
-                        break
-                        
-                    bid_price = await asyncio.to_thread(broker.get_bid_price, t)
-                    
-                    if bid_price > 0 and bid_price >= target_price:
-                        res = broker.send_order(t, "SELL", rem_qty, bid_price, "LIMIT")
-                        odno = res.get('odno', '')
-                        
-                        if res.get('rt_cd') == '0' and odno:
-                            await asyncio.sleep(2.0)
-                            unfilled = await asyncio.to_thread(broker.get_unfilled_orders_detail, t)
-                            my_order = next((o for o in unfilled if o.get('odno') == odno), None)
-                            
-                            if not my_order:
-                                rem_qty = 0
-                                hunt_success = True
-                                actual_sell_price = bid_price
-                                break
-                            else:
-                                ord_qty = int(float(my_order.get('ord_qty', 0)))
-                                tot_ccld_qty = int(float(my_order.get('tot_ccld_qty', 0)))
-                                rem_qty = ord_qty - tot_ccld_qty
-                                
-                                await asyncio.to_thread(broker.cancel_order, t, odno)
-                                await asyncio.sleep(1.0)
-                                
-                    await asyncio.sleep(0.5)
-                    
-                if hunt_success:
-                    cfg.set_lock(t, "SNIPER_SELL")
-                    msg = f"🔥 <b>[{t}] 스나이퍼 잭팟 터짐! (목표가 돌파)</b>\n"
-                    msg += f"🎯 실시간 매수 1호가(${bid_price:.2f})가 목표가(${target_price:.2f})를 돌파하여 <b>실제 단가 ${actual_sell_price:.2f}에 전량 강제 익절</b> 처리했습니다.\n"
-                    msg += "🔫 당일 상방(매도) 스나이퍼 활동을 완전 종료합니다."
-                    await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
-                    continue
-                    
-                now_ts = time.time()
-                fail_history_j = app_data.setdefault('sniper_j_fail_ts', {})
-                if now_ts - fail_history_j.get(t, 0) > 3600:
-                    msg = f"🛡️ <b>[{t}] 스나이퍼 잭팟 기습 실패 (방어선 복구)</b>\n"
-                    msg += f"🎯 3회에 걸쳐 전량 익절을 시도했으나 체결되지 않았습니다.\n"
-                    msg += f"🦇 취소했던 원래의 매도(SELL) 주문을 다시 호가창에 정밀 장전합니다."
-                    await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
-                    fail_history_j[t] = now_ts
+                depreciation_factor = 2.0 / split if split > 0 else 0.1
+                star_ratio = (target_pct_val / 100.0) - ((target_pct_val / 100.0) * depreciation_factor * t_val)
+                star_price = math.ceil(avg_price * (1 + star_ratio) * 100) / 100.0
                 
-                ma_5day = await asyncio.to_thread(broker.get_5day_ma, t)
-                plan = strategy.get_plan(t, curr_p, avg_price, qty, prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off)
-                
-                for o in plan.get('core_orders', []) + plan.get('bonus_orders', []):
-                    if o['side'] == 'SELL':
-                        broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
-                        await asyncio.sleep(0.2)
-                        
-                continue
-            
-            # =========================================================================
-            # 3. 상방 스나이퍼 매도 (Quarter / 리버스 / 별값 익절)
-            # =========================================================================
-            # 🚨 [V21.1 박제: 리버스 전용 스나이퍼 3단 기어 탑재]
-            is_rev = cfg.get_reverse_state(t).get("is_active", False)
-            
-            if is_rev:
-                # 리버스 모드: 내 평단가(수수료 포함)를 절대 방어선으로 설정 (1.0025)
-                breakeven_price = math.ceil(avg_price * 1.0025 * 100) / 100.0
-                trigger_price = breakeven_price
-                # 리버스 모드의 탈출 수량 계산 (분할수에 따라 1/10 또는 1/20)
-                sell_divisor = 10 if split <= 20 else 20
-                q_qty = max(4, math.floor(qty / sell_divisor)) if qty >= 4 else qty
-                phase = "리버스 부분 익절(본전+수수료 돌파)"
-            else:
-                # 일반 모드: 전반전은 별값, 후반전은 본전
-                is_first_half = t_val < (split / 2)
-                trigger_price = star_price if is_first_half else math.ceil(avg_price * 1.0025 * 100) / 100.0
-                q_qty = math.ceil(qty / 4)
-                phase = "전반전(별값 돌파)" if is_first_half else "후반전(본전+수수료 돌파)"
-            
-            if not lock_sell and curr_p >= trigger_price:
-                unfilled = await asyncio.to_thread(broker.get_unfilled_orders_detail, t)
-                target_odno = None
-                
-                for o in unfilled:
-                    if o.get('sll_buy_dvsn_cd') == '01' and o.get('ord_dvsn_cd') == '34': 
-                        target_odno = o.get('odno')
-                        break
-                        
-                if target_odno:
-                    await asyncio.to_thread(broker.cancel_order, t, target_odno)
-                    await asyncio.sleep(1.0) 
+                if not lock_sell and curr_p >= target_price:
+                    await asyncio.to_thread(broker.cancel_all_orders_safe, t, side="SELL")
+                    await asyncio.sleep(1.0)
                     
-                    rem_qty = q_qty
+                    rem_qty = qty
                     hunt_success = False
-                    actual_sell_price = trigger_price
+                    actual_sell_price = target_price
                     
                     for attempt in range(3):
                         if rem_qty <= 0:
@@ -471,14 +420,14 @@ async def scheduled_sniper_monitor(context):
                             
                         bid_price = await asyncio.to_thread(broker.get_bid_price, t)
                         
-                        if bid_price > 0 and bid_price >= trigger_price:
+                        if bid_price > 0 and bid_price >= target_price:
                             res = broker.send_order(t, "SELL", rem_qty, bid_price, "LIMIT")
                             odno = res.get('odno', '')
                             
                             if res.get('rt_cd') == '0' and odno:
                                 await asyncio.sleep(2.0)
-                                unfilled_check = await asyncio.to_thread(broker.get_unfilled_orders_detail, t)
-                                my_order = next((o for o in unfilled_check if o.get('odno') == odno), None)
+                                unfilled = await asyncio.to_thread(broker.get_unfilled_orders_detail, t)
+                                my_order = next((o for o in unfilled if o.get('odno') == odno), None)
                                 
                                 if not my_order:
                                     rem_qty = 0
@@ -497,138 +446,261 @@ async def scheduled_sniper_monitor(context):
                         
                     if hunt_success:
                         cfg.set_lock(t, "SNIPER_SELL")
-                        
-                        msg = f"🔫 <b>[{t}] V17 시크릿 쿼터 익절 발동! ({phase})</b>\n"
-                        msg += f"🎯 실시간 매수 1호가: ${bid_price:.2f} (트리거: ${trigger_price:.2f})\n"
-                        msg += f"🛡️ 기존 쿼터 방어선만 해제하고 {q_qty}주를 <b>최적의 단가 ${actual_sell_price:.2f}에 즉시 낚아챘습니다!</b>\n"
-                        
-                        # 🚨 [V21.4 공수 완벽 분리 및 시퀀스 통제 로직 적용]
-                        if not is_rev:
-                            if is_first_half:
-                                await asyncio.to_thread(broker.cancel_targeted_orders, t, "BUY", "34")
-                                await asyncio.sleep(1.0)
-                                
-                                ma_5day = await asyncio.to_thread(broker.get_5day_ma, t)
-                                plan = strategy.get_plan(t, curr_p, avg_price, qty, prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off)
-                                
-                                smart_cores = plan.get('smart_core_orders', [])
-                                smart_bonus = plan.get('smart_bonus_orders', [])
-                                
-                                if len(smart_cores) == 0:
-                                    msg += "\n🛑 <b>[스마트 밸런싱 발동]</b>\n└ 전반전 종가 관망 모드로 전환 (오늘 추가 매수 안 함)"
-                                else:
-                                    msg += "\n🦇 <b>[스마트 방어 매수 장전] (플랜 B 전환)</b>\n"
-                                    for o in smart_cores:
-                                        buy_res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
-                                        err_msg = buy_res.get('msg1')
-                                        msg += f"└ {o['desc']} {o['qty']}주: {'✅' if buy_res.get('rt_cd') == '0' else f'❌({err_msg})'}\n"
-                                        await asyncio.sleep(0.2)
-                                    for o in smart_bonus:
-                                        buy_res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
-                                        msg += f"└ {o['desc']} {o['qty']}주: {'✅' if buy_res.get('rt_cd') == '0' else '❌'}\n"
-                                        await asyncio.sleep(0.2)
-                            else:
-                                msg += "\n🛡️ <b>[공수 완벽 분리 원칙 적용]</b>\n└ 쿼터 익절 성공(후반전)! 기존 하방 매수(LOC) 주문은 전혀 건드리지 않고 그대로 유지하며 스나이퍼 감시를 계속합니다."
-                        else:
-                            msg += "\n🛡️ <b>[공수 완벽 분리 원칙 적용]</b>\n└ 리버스 부분 익절 성공! 기존 하방 매수(LOC) 주문은 전혀 건드리지 않고 그대로 유지하며 스나이퍼 감시를 계속합니다."
-                            
-                        msg += "\n🔒 당일 상방(매도) 쿼터 스나이퍼 감시를 종료합니다."
+                        msg = f"🔥 <b>[{t}] 스나이퍼 잭팟 터짐! (목표가 돌파)</b>\n"
+                        msg += f"🎯 실시간 매수 1호가(${bid_price:.2f})가 목표가(${target_price:.2f})를 돌파하여 <b>실제 단가 ${actual_sell_price:.2f}에 전량 강제 익절</b> 처리했습니다.\n"
+                        msg += "🔫 당일 상방(매도) 스나이퍼 활동을 완전 종료합니다."
                         await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
                         continue
                         
                     now_ts = time.time()
-                    fail_history_q = app_data.setdefault('sniper_q_fail_ts', {})
-                    if now_ts - fail_history_q.get(t, 0) > 3600:
-                        msg = f"🛡️ <b>[{t}] 스나이퍼 쿼터 기습 실패 (방어선 복구)</b>\n"
-                        msg += f"🎯 3회에 걸쳐 쿼터 익절을 시도했으나 체결되지 않았습니다.\n"
-                        msg += f"🦇 취소했던 원래의 쿼터 방어 주문(LOC 매도) 단 1개를 다시 장전합니다."
+                    fail_history_j = app_data.setdefault('sniper_j_fail_ts', {})
+                    if now_ts - fail_history_j.get(t, 0) > 3600:
+                        msg = f"🛡️ <b>[{t}] 스나이퍼 잭팟 기습 실패 (방어선 복구)</b>\n"
+                        msg += f"🎯 3회에 걸쳐 전량 익절을 시도했으나 체결되지 않았습니다.\n"
+                        msg += f"🦇 취소했던 원래의 매도(SELL) 주문을 다시 호가창에 정밀 장전합니다."
                         await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
-                        fail_history_q[t] = now_ts
+                        fail_history_j[t] = now_ts
                     
                     ma_5day = await asyncio.to_thread(broker.get_5day_ma, t)
                     plan = strategy.get_plan(t, curr_p, avg_price, qty, prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off)
                     
-                    for o in plan.get('core_orders', []):
-                        if o['side'] == 'SELL' and o['type'] == 'LOC':
+                    for o in plan.get('core_orders', []) + plan.get('bonus_orders', []):
+                        if o['side'] == 'SELL':
                             broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
                             await asyncio.sleep(0.2)
                             
                     continue
+                
+                # =========================================================================
+                # 3. 상방 스나이퍼 매도 (Quarter / 리버스 / 별값 익절)
+                # =========================================================================
+                is_rev = cfg.get_reverse_state(t).get("is_active", False)
+                
+                if is_rev:
+                    breakeven_price = math.ceil(avg_price * 1.0025 * 100) / 100.0
+                    trigger_price = breakeven_price
+                    sell_divisor = 10 if split <= 20 else 20
+                    q_qty = max(4, math.floor(qty / sell_divisor)) if qty >= 4 else qty
+                    phase = "리버스 부분 익절(본전+수수료 돌파)"
+                else:
+                    is_first_half = t_val < (split / 2)
+                    trigger_price = star_price if is_first_half else math.ceil(avg_price * 1.0025 * 100) / 100.0
+                    q_qty = math.ceil(qty / 4)
+                    phase = "전반전(별값 돌파)" if is_first_half else "후반전(본전+수수료 돌파)"
+                
+                if not lock_sell and curr_p >= trigger_price:
+                    unfilled = await asyncio.to_thread(broker.get_unfilled_orders_detail, t)
+                    target_odno = None
+                    
+                    for o in unfilled:
+                        if o.get('sll_buy_dvsn_cd') == '01' and o.get('ord_dvsn_cd') == '34': 
+                            target_odno = o.get('odno')
+                            break
+                            
+                    if target_odno:
+                        await asyncio.to_thread(broker.cancel_order, t, target_odno)
+                        await asyncio.sleep(1.0) 
+                        
+                        rem_qty = q_qty
+                        hunt_success = False
+                        actual_sell_price = trigger_price
+                        
+                        for attempt in range(3):
+                            if rem_qty <= 0:
+                                hunt_success = True
+                                break
+                                
+                            bid_price = await asyncio.to_thread(broker.get_bid_price, t)
+                            
+                            if bid_price > 0 and bid_price >= trigger_price:
+                                res = broker.send_order(t, "SELL", rem_qty, bid_price, "LIMIT")
+                                odno = res.get('odno', '')
+                                
+                                if res.get('rt_cd') == '0' and odno:
+                                    await asyncio.sleep(2.0)
+                                    unfilled_check = await asyncio.to_thread(broker.get_unfilled_orders_detail, t)
+                                    my_order = next((o for o in unfilled_check if o.get('odno') == odno), None)
+                                    
+                                    if not my_order:
+                                        rem_qty = 0
+                                        hunt_success = True
+                                        actual_sell_price = bid_price
+                                        break
+                                    else:
+                                        ord_qty = int(float(my_order.get('ord_qty', 0)))
+                                        tot_ccld_qty = int(float(my_order.get('tot_ccld_qty', 0)))
+                                        rem_qty = ord_qty - tot_ccld_qty
+                                        
+                                        await asyncio.to_thread(broker.cancel_order, t, odno)
+                                        await asyncio.sleep(1.0)
+                                        
+                            await asyncio.sleep(0.5)
+                            
+                        if hunt_success:
+                            cfg.set_lock(t, "SNIPER_SELL")
+                            
+                            msg = f"🔫 <b>[{t}] V17 시크릿 쿼터 익절 발동! ({phase})</b>\n"
+                            msg += f"🎯 실시간 매수 1호가: ${bid_price:.2f} (트리거: ${trigger_price:.2f})\n"
+                            msg += f"🛡️ 기존 쿼터 방어선만 해제하고 {q_qty}주를 <b>최적의 단가 ${actual_sell_price:.2f}에 즉시 낚아챘습니다!</b>\n"
+                            
+                            if not is_rev:
+                                if is_first_half:
+                                    await asyncio.to_thread(broker.cancel_targeted_orders, t, "BUY", "34")
+                                    await asyncio.sleep(1.0)
+                                    
+                                    ma_5day = await asyncio.to_thread(broker.get_5day_ma, t)
+                                    plan = strategy.get_plan(t, curr_p, avg_price, qty, prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off)
+                                    
+                                    smart_cores = plan.get('smart_core_orders', [])
+                                    smart_bonus = plan.get('smart_bonus_orders', [])
+                                    
+                                    if len(smart_cores) == 0:
+                                        msg += "\n🛑 <b>[스마트 밸런싱 발동]</b>\n└ 전반전 종가 관망 모드로 전환 (오늘 추가 매수 안 함)"
+                                    else:
+                                        msg += "\n🦇 <b>[스마트 방어 매수 장전] (플랜 B 전환)</b>\n"
+                                        for o in smart_cores:
+                                            buy_res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
+                                            err_msg = buy_res.get('msg1')
+                                            msg += f"└ {o['desc']} {o['qty']}주: {'✅' if buy_res.get('rt_cd') == '0' else f'❌({err_msg})'}\n"
+                                            await asyncio.sleep(0.2)
+                                        for o in smart_bonus:
+                                            buy_res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
+                                            msg += f"└ {o['desc']} {o['qty']}주: {'✅' if buy_res.get('rt_cd') == '0' else '❌'}\n"
+                                            await asyncio.sleep(0.2)
+                                else:
+                                    msg += "\n🛡️ <b>[공수 완벽 분리 원칙 적용]</b>\n└ 쿼터 익절 성공(후반전)! 기존 하방 매수(LOC) 주문은 전혀 건드리지 않고 그대로 유지하며 스나이퍼 감시를 계속합니다."
+                            else:
+                                msg += "\n🛡️ <b>[공수 완벽 분리 원칙 적용]</b>\n└ 리버스 부분 익절 성공! 기존 하방 매수(LOC) 주문은 전혀 건드리지 않고 그대로 유지하며 스나이퍼 감시를 계속합니다."
+                                
+                            msg += "\n🔒 당일 상방(매도) 쿼터 스나이퍼 감시를 종료합니다."
+                            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
+                            continue
+                            
+                        now_ts = time.time()
+                        fail_history_q = app_data.setdefault('sniper_q_fail_ts', {})
+                        if now_ts - fail_history_q.get(t, 0) > 3600:
+                            msg = f"🛡️ <b>[{t}] 스나이퍼 쿼터 기습 실패 (방어선 복구)</b>\n"
+                            msg += f"🎯 3회에 걸쳐 쿼터 익절을 시도했으나 체결되지 않았습니다.\n"
+                            msg += f"🦇 취소했던 원래의 쿼터 방어 주문(LOC 매도) 단 1개를 다시 장전합니다."
+                            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
+                            fail_history_q[t] = now_ts
+                        
+                        ma_5day = await asyncio.to_thread(broker.get_5day_ma, t)
+                        plan = strategy.get_plan(t, curr_p, avg_price, qty, prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off)
+                        
+                        for o in plan.get('core_orders', []):
+                            if o['side'] == 'SELL' and o['type'] == 'LOC':
+                                broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
+                                await asyncio.sleep(0.2)
+                                
+                        continue
+    
+    # 🚨 [V21.4 핫픽스] 스나이퍼 통신 먹통 시 에러 캡처 및 통제권 강제 반납
+    try:
+        await asyncio.wait_for(_do_sniper(), timeout=45.0)
+    except asyncio.TimeoutError:
+        app_data = context.job.data
+        fail_history_t = app_data.setdefault('sniper_timeout_ts', 0)
+        now_ts = time.time()
+        # 폭주 방지: 30분에 한 번만 타임아웃 텔레그램 전송
+        if now_ts - fail_history_t > 1800: 
+            await context.bot.send_message(chat_id=context.job.chat_id, text="🚨 <b>[긴급] 야후 파이낸스 등 외부 API 응답 지연으로 스나이퍼 감시가 무한 대기 상태에 빠졌습니다. \n\n1회 건너뛰고 통제권(Lock)을 강제 반환하여 정규장 로직을 보호합니다!</b>", parse_mode='HTML')
+            app_data['sniper_timeout_ts'] = now_ts
+    except Exception as e:
+        logging.error(f"🚨 스나이퍼 모니터 에러: {e}")
 
 async def scheduled_regular_trade(context):
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.datetime.now(kst)
     target_hour, _ = get_target_hour()
-    
-    if now.hour != target_hour: return
-    if not is_market_open(): return
-    
     chat_id = context.job.chat_id
+    
+    # 🚨 [V21.4 핫픽스] 0.001초 미세 오차(Jitter) 방어선 구축 (±2분 관용 타임)
+    now_minutes = now.hour * 60 + now.minute
+    target_minutes = target_hour * 60 + 30
+    
+    if abs(now_minutes - target_minutes) > 2 and abs(now_minutes - target_minutes) < (24*60 - 2):
+        return
+        
+    if not is_market_open():
+        await context.bot.send_message(chat_id=chat_id, text="⛔ <b>오늘은 미국 증시 휴장일입니다. 정규장 주문 스케줄을 건너뜁니다.</b>", parse_mode='HTML')
+        return
+    
     app_data = context.job.data
     cfg, broker, strategy, tx_lock = app_data['cfg'], app_data['broker'], app_data['strategy'], app_data['tx_lock']
     
     latest_version = cfg.get_latest_version()
     await context.bot.send_message(chat_id=chat_id, text=f"🌃 <b>[{target_hour}:30] 다이내믹 스노우볼 {latest_version} 정규장 주문을 준비합니다.</b>", parse_mode='HTML')
     
-    async with tx_lock:
-        cash, holdings = broker.get_account_balance()
-        if holdings is None:
-            await context.bot.send_message(chat_id=chat_id, text="❌ 계좌 정보를 불러오지 못해 정규장 주문을 취소합니다.", parse_mode='HTML')
-            return
+    # 🚨 [V21.4 핫픽스] 비동기 병목(Deadlock) 타임아웃 족쇄 
+    async def _do_regular_trade():
+        async with tx_lock:
+            cash, holdings = broker.get_account_balance()
+            if holdings is None:
+                await context.bot.send_message(chat_id=chat_id, text="❌ 계좌 정보를 불러오지 못해 정규장 주문을 취소합니다.", parse_mode='HTML')
+                return
 
-        sorted_tickers, allocated_cash, force_turbo_off = get_budget_allocation(cash, cfg.get_active_tickers(), cfg)
-        
-        plans = {}
-        msgs = {t: "" for t in sorted_tickers}
-        all_success = {t: True for t in sorted_tickers}
-
-        for t in sorted_tickers:
-            if cfg.check_lock(t, "REG"): continue
-            h = holdings.get(t, {'qty': 0, 'avg': 0})
+            sorted_tickers, allocated_cash, force_turbo_off = get_budget_allocation(cash, cfg.get_active_tickers(), cfg)
             
-            curr_p = await asyncio.to_thread(broker.get_current_price, t)
-            prev_c = await asyncio.to_thread(broker.get_previous_close, t)
-            ma_5day = await asyncio.to_thread(broker.get_5day_ma, t)
-            
-            plan = strategy.get_plan(t, curr_p, float(h['avg']), int(h['qty']), prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off)
-            plans[t] = plan
-            
-            if plan['orders']:
-                is_rev = plan.get('is_reverse', False)
-                title = f"🔄 <b>[{t}] 리버스 주문 실행 (교차 전송)</b>\n" if is_rev else f"💎 <b>[{t}] 정규장 주문 실행 (교차 전송)</b>\n"
-                msgs[t] += title
+            plans = {}
+            msgs = {t: "" for t in sorted_tickers}
+            all_success = {t: True for t in sorted_tickers}
 
-        for t in sorted_tickers:
-            if t not in plans or not plans[t]['orders']: continue
-            for o in plans[t].get('core_orders', []):
-                res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
-                is_success = res.get('rt_cd') == '0'
-                if not is_success: all_success[t] = False
-                err_msg = res.get('msg1')
-                msgs[t] += f"└ 1차 필수: {o['desc']} {o['qty']}주: {'✅' if is_success else f'❌({err_msg})'}\n"
-                await asyncio.sleep(0.2) 
-
-        for t in sorted_tickers:
-            if t not in plans or not plans[t]['orders']: continue
-            for o in plans[t].get('bonus_orders', []):
-                res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
-                is_success = res.get('rt_cd') == '0'
-                msgs[t] += f"└ 2차 보너스: {o['desc']} {o['qty']}주: {'✅' if is_success else '❌(잔금패스)'}\n"
-                await asyncio.sleep(0.2) 
-
-        for t in sorted_tickers:
-            if t not in plans or not plans[t]['orders']: continue
-            
-            if all_success[t] and len(plans[t].get('core_orders', [])) > 0:
-                cfg.set_lock(t, "REG")
-                msgs[t] += "\n🔒 <b>필수 주문 정상 전송 완료 (잠금 설정됨)</b>"
-            elif not all_success[t]:
-                msgs[t] += "\n⚠️ <b>일부 필수 주문 실패 (매매 잠금 보류 - 다음 스케줄 재시도)</b>"
-            else:
-                cfg.set_lock(t, "REG")
-                msgs[t] += "\n🔒 <b>보너스 줍줍 주문만 전송 완료 (잠금 설정됨)</b>"
+            for t in sorted_tickers:
+                if cfg.check_lock(t, "REG"): continue
+                h = holdings.get(t, {'qty': 0, 'avg': 0})
                 
-            await context.bot.send_message(chat_id=chat_id, text=msgs[t], parse_mode='HTML')
+                curr_p = await asyncio.to_thread(broker.get_current_price, t)
+                prev_c = await asyncio.to_thread(broker.get_previous_close, t)
+                ma_5day = await asyncio.to_thread(broker.get_5day_ma, t)
+                
+                plan = strategy.get_plan(t, curr_p, float(h['avg']), int(h['qty']), prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off)
+                plans[t] = plan
+                
+                if plan['orders']:
+                    is_rev = plan.get('is_reverse', False)
+                    title = f"🔄 <b>[{t}] 리버스 주문 실행 (교차 전송)</b>\n" if is_rev else f"💎 <b>[{t}] 정규장 주문 실행 (교차 전송)</b>\n"
+                    msgs[t] += title
+
+            for t in sorted_tickers:
+                if t not in plans or not plans[t]['orders']: continue
+                for o in plans[t].get('core_orders', []):
+                    res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
+                    is_success = res.get('rt_cd') == '0'
+                    if not is_success: all_success[t] = False
+                    err_msg = res.get('msg1')
+                    msgs[t] += f"└ 1차 필수: {o['desc']} {o['qty']}주: {'✅' if is_success else f'❌({err_msg})'}\n"
+                    await asyncio.sleep(0.2) 
+
+            for t in sorted_tickers:
+                if t not in plans or not plans[t]['orders']: continue
+                for o in plans[t].get('bonus_orders', []):
+                    res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
+                    is_success = res.get('rt_cd') == '0'
+                    msgs[t] += f"└ 2차 보너스: {o['desc']} {o['qty']}주: {'✅' if is_success else '❌(잔금패스)'}\n"
+                    await asyncio.sleep(0.2) 
+
+            for t in sorted_tickers:
+                if t not in plans or not plans[t]['orders']: continue
+                
+                if all_success[t] and len(plans[t].get('core_orders', [])) > 0:
+                    cfg.set_lock(t, "REG")
+                    msgs[t] += "\n🔒 <b>필수 주문 정상 전송 완료 (잠금 설정됨)</b>"
+                elif not all_success[t]:
+                    msgs[t] += "\n⚠️ <b>일부 필수 주문 실패 (매매 잠금 보류 - 다음 스케줄 재시도)</b>"
+                else:
+                    cfg.set_lock(t, "REG")
+                    msgs[t] += "\n🔒 <b>보너스 줍줍 주문만 전송 완료 (잠금 설정됨)</b>"
+                    
+                await context.bot.send_message(chat_id=chat_id, text=msgs[t], parse_mode='HTML')
+
+    try:
+        # 300초(5분) 내에 정규장 로직이 안 끝나면 강제 중단
+        await asyncio.wait_for(_do_regular_trade(), timeout=300.0) 
+    except asyncio.TimeoutError:
+        await context.bot.send_message(chat_id=chat_id, text="🚨 <b>[긴급 에러] 정규장 통합 주문 처리 중 API 응답 지연으로 타임아웃이 발생했습니다. 통제권(Lock)을 강제 반환합니다!</b>", parse_mode='HTML')
+    except Exception as e:
+        await context.bot.send_message(chat_id=chat_id, text=f"🚨 <b>[긴급 에러] 정규장 주문 처리 중 예기치 않은 오류 발생:</b>\n{e}", parse_mode='HTML')
 
 async def scheduled_auto_sync_summer(context):
     if not is_dst_active(): return 
@@ -663,7 +735,7 @@ def main():
     latest_version = cfg.get_latest_version() 
     
     print("=" * 50)
-    print(f"🚀 방치형 자동매매 {latest_version} (V21 아키텍처 탑재)")
+    print(f"🚀 방치형 자동매매 {latest_version} (V21.4 아키텍처 탑재)")
     print(f"📅 날짜 정보: {season_msg}")
     print(f"⏰ 자동 동기화: 08:30(여름) / 09:30(겨울) 자동 변경")
     print("=" * 50)
