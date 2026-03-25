@@ -269,27 +269,12 @@ class InfiniteStrategy:
                     core_orders.append({"side": "SELL", "price": star_price, "qty": q_qty, "type": "LOC", "desc": "🌟별값매도"})
                 if target_price > 0 and rem_qty > 0:
                     core_orders.append({"side": "SELL", "price": target_price, "qty": rem_qty, "type": "LIMIT", "desc": "🎯목표매도"})
-                    
-                if version == "V17":
-                    if can_buy and p_avg > 0:
-                        # 👇 요청하신 명칭 "(평단)" 제거 수술 부위 (100% 원본 보존 후 교정 완료)
-                        smart_core_orders.append({"side": "BUY", "price": p_avg, "qty": N, "type": "LOC", "desc": "🦇스마트방어"})
-                        for i in range(1, 6):
-                            j_price = self._floor(one_portion_amt / (N + i))
-                            c_j_price = round(min(j_price, p_avg - 0.01), 2)
-                            if c_j_price > 0:
-                                safe_c_j_price = max(0.01, c_j_price)
-                                smart_bonus_orders.append({"side": "BUY", "price": safe_c_j_price, "qty": 1, "type": "LOC", "desc": f"🧹스마트줍줍({i})"})
 
-            # 플랜 B 스위칭 로직 
+            # 💡 [플랜B 완전히 도려냄] 전반전에 스나이퍼 명중해도 더 이상 매수 주문을 건드리지 않습니다!
+            # 오직 텔레그램 UI 상태값만 스나이퍼가 명중했음을 표시합니다.
             if lock_s_sell:
                 if version == "V17" and not is_reverse and t_val < (split / 2):
-                    # 전반전 상방 명중 시 기존 매수 삭제 후 스마트 매수로 UI 스위칭
-                    core_orders = [o for o in core_orders if o['side'] != 'BUY']
-                    bonus_orders = [o for o in bonus_orders if o['side'] != 'BUY']
-                    core_orders.extend(smart_core_orders)
-                    bonus_orders.extend(smart_bonus_orders)
-                    process_status = "🦇플랜B(방어/관망)"
+                    process_status = "🔫전반전(명중/성장중)" # 눈덩이 키우는 중임을 표시
                 else:
                     process_status = "🔫스나이퍼(명중)"
 

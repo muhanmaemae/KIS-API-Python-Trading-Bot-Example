@@ -554,28 +554,8 @@ async def scheduled_sniper_monitor(context):
                         
                         if not is_rev:
                             if is_first_half:
-                                await asyncio.to_thread(broker.cancel_targeted_orders, t, "BUY", "34")
-                                await asyncio.sleep(1.0)
-                                
-                                ma_5day = await asyncio.to_thread(broker.get_5day_ma, t)
-                                plan = strategy.get_plan(t, curr_p, avg_price, qty, prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash[t], force_turbo_off=force_turbo_off)
-                                
-                                smart_cores = plan.get('smart_core_orders', [])
-                                smart_bonus = plan.get('smart_bonus_orders', [])
-                                
-                                if len(smart_cores) == 0:
-                                    msg += "\n🛑 <b>[스마트 밸런싱 발동]</b>\n└ 전반전 종가 관망 모드로 전환 (오늘 추가 매수 안 함)"
-                                else:
-                                    msg += "\n🦇 <b>[스마트 방어 매수 장전] (플랜 B 전환)</b>\n"
-                                    for o in smart_cores:
-                                        buy_res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
-                                        err_msg = buy_res.get('msg1')
-                                        msg += f"└ {o['desc']} {o['qty']}주: {'✅' if buy_res.get('rt_cd') == '0' else f'❌({err_msg})'}\n"
-                                        await asyncio.sleep(0.2)
-                                    for o in smart_bonus:
-                                        buy_res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
-                                        msg += f"└ {o['desc']} {o['qty']}주: {'✅' if buy_res.get('rt_cd') == '0' else '❌'}\n"
-                                        await asyncio.sleep(0.2)
+                                # 💡 [오리지널 무매 완벽 복원] 전반전 쿼터 익절 시 매수 취소(플랜B 스위칭) 찌꺼기 완전 소각 완료!
+                                msg += "\n🛡️ <b>[공수 완벽 분리 원칙 적용]</b>\n└ 쿼터 익절 성공(전반전)! 기존 0.5회분 강제 매수(LOC) 주문은 절대 취소하지 않고 온전히 유지하여 눈덩이를 계속 키웁니다. (오리지널 무매 원칙)"
                             else:
                                 msg += "\n🛡️ <b>[공수 완벽 분리 원칙 적용]</b>\n└ 쿼터 익절 성공(후반전)! 기존 하방 매수(LOC) 주문은 전혀 건드리지 않고 그대로 유지하며 스나이퍼 감시를 계속합니다."
                         else:
