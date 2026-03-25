@@ -250,7 +250,6 @@ class KoreaInvestmentBroker:
         return 0.0
 
     def get_previous_close(self, ticker):
-        # 🔥 [V21.4 핵심 패치 1] 정규장 종가 ➡️ 전일 애프터마켓 최종 종가로 기준점 교체
         try:
             df = yf.download(ticker, period="5d", interval="1m", prepost=True, progress=False)
             if not df.empty:
@@ -259,14 +258,17 @@ class KoreaInvestmentBroker:
                 df.index = df.index.tz_convert('America/New_York')
                 
                 now_est = datetime.datetime.now(pytz.timezone('America/New_York'))
-                # 오늘 새벽 04:00 (프리마켓 시작점) 이전의 데이터만 필터링
-                today_pre_start = now_est.replace(hour=4, minute=0, second=0, microsecond=0)
-                if now_est.hour < 4:
-                    today_pre_start -= datetime.timedelta(days=1)
                 
-                past_df = df[df.index < today_pre_start]
+                # 🔥 V21.7 핫픽스: 20:00 (애프터마켓 종료) 기준 절대 시간 분리
+                if now_est.time() >= datetime.time(20, 0):
+                    last_completed_date = now_est.date()
+                else:
+                    last_completed_date = now_est.date() - datetime.timedelta(days=1)
+                
+                df_full = df.between_time('04:00', '19:59')
+                past_df = df_full[df_full.index.date <= last_completed_date]
+                
                 if not past_df.empty:
-                    # 마지막으로 거래된 가격(애프터마켓 종가)을 반환
                     return float(past_df['Close'].iloc[-1])
         except Exception as e:
             print(f"⚠️ [야후 파이낸스] 전일 애프터마켓 종가 에러, 한투 API 우회 가동: {e}")
@@ -526,7 +528,6 @@ class KoreaInvestmentBroker:
         return 0.0, ""
 
     def get_dynamic_sniper_target(self, index_ticker, weight=1.0):
-        # 🔥 [V21.4 핵심 패치 2] 3단 동적 엔진 (애프터마켓 기준 + 갭 자동 변속 + 상한가 Cap)
         try:
             df = yf.download(index_ticker, period='1mo', interval='5m', prepost=True, progress=False)
             if df.empty: 
@@ -554,22 +555,28 @@ class KoreaInvestmentBroker:
                     low_val = group['Low'].min()
                     
                 daily_data.append({
-                    'Date': pd.to_datetime(date),
+                    'Date': pd.to_datetime(date).date(),
                     'High': high_val,
                     'Low': low_val,
                     'Close': group['Close'].iloc[-1] # 애프터마켓 최종 종가
                 })
             daily_df = pd.DataFrame(daily_data).set_index('Date')
             
-            est = pytz.timezone('America/New_York')
-            now_est = datetime.datetime.now(est)
-            today_date = now_est.date()
+            now_est = datetime.datetime.now(pytz.timezone('America/New_York'))
+            
+            # 🔥 V21.7 핫픽스: 20:00 (애프터마켓 종료) 기준 절대 시간 분리
+            if now_est.time() >= datetime.time(20, 0):
+                last_completed_date = now_est.date()
+                target_trading_date = now_est.date() + datetime.timedelta(days=1)
+            else:
+                last_completed_date = now_est.date() - datetime.timedelta(days=1)
+                target_trading_date = now_est.date()
             
             if len(daily_df) < 15: 
                 return None 
             
             # 1단계: '어제'까지의 데이터로 순수 변동성(ATR) 계산
-            past_df = daily_df[daily_df.index.date < today_date]
+            past_df = daily_df[daily_df.index <= last_completed_date]
             if past_df.empty or len(past_df) < 15:
                 # Fallback 로직
                 last_atr_5 = 0
@@ -587,7 +594,7 @@ class KoreaInvestmentBroker:
                 last_close_past = past_df['Close'].iloc[-1] # 전일 애프터마켓 최종 종가
             
             # 2단계: 프리마켓 갭(Gap) 측정
-            today_df = daily_df[daily_df.index.date == today_date]
+            today_df = daily_df[daily_df.index == target_trading_date]
             gap_pct = 0.0
             is_panic = False
             
@@ -640,8 +647,8 @@ class KoreaInvestmentBroker:
 
         try:
             excg_cd = self._get_exchange_code(ticker, target_api="PRICE")
-            params = {"AUTH": "", "EXCD": excg_cd, "SYMB": ticker}
-            res = self._call_api("HHDFS76200200", "/uapi/overseas-price/v1/quotations/price", "GET", params=params)
+            params = {"AUTH": "", "EXCD": excg_cd, "SYMB": params} # 오타방지
+            res = self._call_api("HHDFS76200200", "/uapi/overseas-price/v1/quotations/price", "GET", params={"AUTH": "", "EXCD": excg_cd, "SYMB": ticker})
             if res.get('rt_cd') == '0':
                 out = res.get('output', {})
                 return float(out.get('high', 0.0)), float(out.get('low', 0.0))

@@ -152,22 +152,20 @@ class TelegramController:
                 actual_avg = float(h['avg']) if h['avg'] else 0.0
                 actual_qty = int(h['qty'])
                 
-                if status_code == "CLOSE" and curr > 0: safe_prev_close = curr
-                else: safe_prev_close = prev_close if prev_close else 0.0
+                # 🔥 [V21.7 핵심 핫픽스] 어떤 상황(주말/휴장)이든 무조건 애프터마켓 최종 종가(prev_close)를 신뢰하도록 수술
+                safe_prev_close = prev_close if prev_close else 0.0
                 
                 idx_ticker = "SOXX" if t == "SOXL" else "QQQ"
                 weight = self.cfg.get_sniper_multiplier(t)
                 
                 dynamic_pct = await asyncio.to_thread(self.broker.get_dynamic_sniper_target, idx_ticker, weight)
                 
-                # 🔥 V21.7 패닉 속성 안전 추출 (에러 방어)
                 is_panic = getattr(dynamic_pct, 'is_panic', False)
                 gap_pct = getattr(dynamic_pct, 'gap_pct', 0.0)
                 
                 if dynamic_pct is None:
                     dynamic_pct = 9.0 if t == "SOXL" else 5.0
                 
-                # 🔥 V21.7 패닉 감지 시 텔레그램 긴급 알림 발송 (하루 1회)
                 if is_panic:
                     today_str = datetime.datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d')
                     alert_key = f"{t}_{today_str}"
@@ -176,6 +174,7 @@ class TelegramController:
                         await update.message.reply_text(alert_msg, parse_mode='HTML')
                         self.panic_alerts[alert_key] = True
                 
+                # 🔥 이제 safe_prev_close는 무조건 애프터마켓 종가를 가리킵니다.
                 hybrid_target_price = safe_prev_close * (1 - (dynamic_pct / 100.0))
                 
                 if actual_avg > 0:
@@ -185,7 +184,6 @@ class TelegramController:
                     elif hybrid_target_price >= ma_5day:
                         trigger_reason = "🛑(5일선 위 과열)"
                     else:
-                        # 🔥 V21.7 패닉 상태면 뷰어 문구 변경
                         trigger_reason = f"🌪️패닉(-{dynamic_pct}%)" if is_panic else f"-{dynamic_pct}%"
                 else:
                     is_sniper_active = True
@@ -207,7 +205,6 @@ class TelegramController:
                 is_rev = plan.get('is_reverse', False)
                 secret_quarter_target = 0.0
                 
-               # 🚨 [V21.4 수정] V17 모드 전/후반전 타점 실제 트리거(방아쇠) 100% 동기화
                 if ver == "V17" and actual_qty > 0:
                     if is_rev:
                         secret_quarter_target = math.ceil(actual_avg * 1.0025 * 100) / 100.0
@@ -229,7 +226,7 @@ class TelegramController:
                     'hybrid_base': 0.0, 
                     'hybrid_target': hybrid_target_price,
                     'trigger_reason': trigger_reason,
-                    'sniper_trigger': float(dynamic_pct), # Ensure it's passed as float to viewer
+                    'sniper_trigger': float(dynamic_pct), 
                     'secret_quarter_target': secret_quarter_target,
                     'day_high': day_high,
                     'day_low': day_low,
