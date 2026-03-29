@@ -53,8 +53,8 @@ def _save_cache(key, value):
 def get_tqqq_target_drop():
     """ [ TQQQ 스나이퍼 ] 실시간 VXN을 최근 1년 평균으로 나누어 타격선을 계산합니다. """
     try:
-        # 💡 [V3.0+ 수술] 5일치 대신 1년(1y) 데이터를 호출하여 현재값과 1년 평균을 동시 추출
-        vxn_data = yf.download("^VXN", period="1y", interval="1d", progress=False)
+        # 💡 [데이터 섀도우 방어] 2년치 데이터를 당겨와 정확히 252거래일만 추출
+        vxn_data = yf.download("^VXN", period="2y", interval="1d", progress=False)
         
         if vxn_data.empty: 
             return -6.18
@@ -64,14 +64,17 @@ def get_tqqq_target_drop():
                 vxn_data.columns = vxn_data.columns.droplevel(1)
                 
         valid_closes = vxn_data['Close'].dropna()
-        if valid_closes.empty:
+        
+        # 정확히 최근 1년(252거래일) 데이터만 슬라이싱하여 백테스트와 완벽 동기화
+        valid_closes_1y = valid_closes.tail(252)
+        if valid_closes_1y.empty:
             return -6.18
             
-        current_vxn = float(valid_closes.iloc[-1])
+        current_vxn = float(valid_closes_1y.iloc[-1])
         
         # 💡 [롤링 1년 평균 연산 및 캐싱]
         try:
-            mean_vxn = float(valid_closes.mean())
+            mean_vxn = float(valid_closes_1y.mean())
             if pd.isna(mean_vxn) or mean_vxn <= 0:
                 raise ValueError("Invalid Mean")
             _save_cache("VXN_MEAN", mean_vxn)
@@ -91,8 +94,8 @@ def get_tqqq_target_drop():
 def get_soxl_target_drop():
     """ [ SOXL 스나이퍼 ] SOXX HV를 최근 1년 평균 HV로 나누어 타격선 계산 """
     try:
-        # 💡 [V3.0+ 수술] 1년치 데이터를 당겨와 전체 구간의 20일 HV 시계열을 생성
-        soxx_data = yf.download("SOXX", period="1y", interval="1d", progress=False)
+        # 💡 [데이터 섀도우 방어] 2년치 데이터를 당겨와 20일 증발을 상쇄
+        soxx_data = yf.download("SOXX", period="2y", interval="1d", progress=False)
         if soxx_data.empty or len(soxx_data) < 21: 
             return -7.59
         
@@ -105,14 +108,17 @@ def get_soxl_target_drop():
         hv_20d = log_returns.rolling(window=20).std() * np.sqrt(252) * 100
         
         valid_hvs = hv_20d.dropna()
-        if valid_hvs.empty:
+        
+        # 정확히 최근 1년(252거래일) 데이터만 슬라이싱하여 백테스트와 완벽 동기화
+        valid_hvs_1y = valid_hvs.tail(252)
+        if valid_hvs_1y.empty:
             return -7.59
             
-        latest_hv = float(valid_hvs.iloc[-1])
+        latest_hv = float(valid_hvs_1y.iloc[-1])
         
         # 💡 [롤링 1년 평균 연산 및 캐싱]
         try:
-            mean_hv = float(valid_hvs.mean())
+            mean_hv = float(valid_hvs_1y.mean())
             if pd.isna(mean_hv) or mean_hv <= 0:
                 raise ValueError("Invalid Mean")
             _save_cache("SOXX_HV_MEAN", mean_hv)
@@ -129,7 +135,7 @@ def get_soxl_target_drop():
 def get_tqqq_target_drop_full():
     """ 💡 [텔레그램 UI 표시용] TQQQ 상세 데이터 세트 반환 """
     try:
-        vxn_data = yf.download("^VXN", period="1y", interval="1d", progress=False)
+        vxn_data = yf.download("^VXN", period="2y", interval="1d", progress=False)
         
         if vxn_data.empty: 
             return 0.0, 1.0, -6.18
@@ -139,13 +145,15 @@ def get_tqqq_target_drop_full():
                 vxn_data.columns = vxn_data.columns.droplevel(1)
                 
         valid_closes = vxn_data['Close'].dropna()
-        if valid_closes.empty:
+        valid_closes_1y = valid_closes.tail(252)
+        
+        if valid_closes_1y.empty:
             return 0.0, 1.0, -6.18
             
-        current_vxn = float(valid_closes.iloc[-1])
+        current_vxn = float(valid_closes_1y.iloc[-1])
         
         try:
-            mean_vxn = float(valid_closes.mean())
+            mean_vxn = float(valid_closes_1y.mean())
             if pd.isna(mean_vxn) or mean_vxn <= 0:
                 raise ValueError("Invalid Mean")
             _save_cache("VXN_MEAN", mean_vxn)
@@ -164,7 +172,7 @@ def get_tqqq_target_drop_full():
 def get_soxl_target_drop_full():
     """ 💡 [텔레그램 UI 표시용] SOXL 상세 데이터 세트 반환 """
     try:
-        soxx_data = yf.download("SOXX", period="1y", interval="1d", progress=False)
+        soxx_data = yf.download("SOXX", period="2y", interval="1d", progress=False)
         if soxx_data.empty or len(soxx_data) < 21: 
             return 0.0, 1.0, -7.59
         
@@ -177,13 +185,15 @@ def get_soxl_target_drop_full():
         hv_20d = log_returns.rolling(window=20).std() * np.sqrt(252) * 100
         
         valid_hvs = hv_20d.dropna()
-        if valid_hvs.empty:
+        valid_hvs_1y = valid_hvs.tail(252)
+        
+        if valid_hvs_1y.empty:
             return 0.0, 1.0, -7.59
             
-        latest_hv = float(valid_hvs.iloc[-1])
+        latest_hv = float(valid_hvs_1y.iloc[-1])
         
         try:
-            mean_hv = float(valid_hvs.mean())
+            mean_hv = float(valid_hvs_1y.mean())
             if pd.isna(mean_hv) or mean_hv <= 0:
                 raise ValueError("Invalid Mean")
             _save_cache("SOXX_HV_MEAN", mean_hv)
