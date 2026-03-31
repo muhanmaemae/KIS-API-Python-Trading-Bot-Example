@@ -209,6 +209,7 @@ class KoreaInvestmentBroker:
     def get_current_5min_candle(self, ticker):
         """
         [V22.15] 이중 거래량(MA10/MA20) 골든크로스 엔진을 위해 순수 정규장 데이터만으로 거래량 평균 산출
+        💡 [V3.1 VWAP] 당일 정규장 누적 거래량 가중 평균가(VWAP) 연산 병합
         """
         try:
             stock = yf.Ticker(ticker)
@@ -228,6 +229,16 @@ class KoreaInvestmentBroker:
             if regular_market.empty:
                 return None
                 
+            # 💡 [VWAP 연산 엔진] 당일 누적 거래대금 및 누적 거래량 산출
+            typical_price = (regular_market['High'] + regular_market['Low'] + regular_market['Close']) / 3.0
+            vol_price = typical_price * regular_market['Volume']
+            
+            cum_vol_price = vol_price.cumsum()
+            cum_vol = regular_market['Volume'].cumsum()
+            
+            vwap_series = cum_vol_price / cum_vol.replace(0, 1) 
+            current_vwap = float(vwap_series.iloc[-1]) if not vwap_series.empty else 0.0
+            
             resampled = regular_market.resample('5min', label='left', closed='left').agg({
                 'Open': 'first',
                 'High': 'max',
@@ -252,12 +263,13 @@ class KoreaInvestmentBroker:
             
             return {
                 'open': float(last_candle['Open']),
-                'high': float(latest_1m['High']),  # 실시간 타격선 갱신을 위해 최신 고가 사용
-                'low': float(latest_1m['Low']),    # 실시간 바닥 갱신을 위해 최신 저가 사용
+                'high': float(latest_1m['High']),  
+                'low': float(latest_1m['Low']),    
                 'close': float(latest_1m['Close']),
-                'volume': float(last_candle['Volume']), # 현재 진행 중인 5분 캔들의 누적 거래량
+                'volume': float(last_candle['Volume']), 
                 'vol_ma10': vol_ma10,
-                'vol_ma20': vol_ma20
+                'vol_ma20': vol_ma20,
+                'vwap': current_vwap  # 💡 추출된 VWAP 팩트 데이터를 딕셔너리에 안착
             }
         except Exception as e:
             print(f"⚠️ [Broker] 실시간 5분봉 캔들 조회 실패 ({ticker}): {e}")
