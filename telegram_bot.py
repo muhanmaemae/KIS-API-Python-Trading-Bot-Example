@@ -144,14 +144,13 @@ class TelegramController:
             est = pytz.timezone('US/Eastern')
             now_est = datetime.datetime.now(est)
             
-            # 💡 [V3.2 패치] 타임라인 통제: 정규장 개장(09:30) 후 50분이 지났는지(10:20) 판별
             is_sniper_active_time = False
             try:
                 nyse = mcal.get_calendar('NYSE')
                 schedule = nyse.schedule(start_date=now_est.date(), end_date=now_est.date())
                 if not schedule.empty:
                     market_open = schedule.iloc[0]['market_open'].astimezone(est)
-                    switch_time = market_open + datetime.timedelta(minutes=50) # 10:20 EST
+                    switch_time = market_open + datetime.timedelta(minutes=50)
                     if now_est >= switch_time:
                         is_sniper_active_time = True
             except Exception:
@@ -174,7 +173,6 @@ class TelegramController:
                 
                 dynamic_pct_obj = await asyncio.to_thread(self.broker.get_dynamic_sniper_target, idx_ticker)
                 
-                # 💡 [V3.2 패치] 타격선은 가중치가 배제된 절대 앵커값으로 고정 (기본값 방어막 포함)
                 dynamic_pct = float(dynamic_pct_obj) if dynamic_pct_obj is not None else (8.79 if t == "SOXL" else 4.95)
                 
                 tracking_status = tracking_cache.get(t, {})
@@ -228,7 +226,7 @@ class TelegramController:
                     'prev_close': safe_prev_close,
                     'tracking_info': tracking_status,
                     'dynamic_obj': dynamic_pct_obj,
-                    'is_sniper_active_time': is_sniper_active_time  # 💡 [V3.2 패치] 방향타 락온 상태 전달
+                    'is_sniper_active_time': is_sniper_active_time 
                 })
                 total_buy_needed += sum(o['price']*o['qty'] for o in plan['orders'] if o['side']=='BUY')
 
@@ -491,7 +489,6 @@ class TelegramController:
     async def cmd_mode(self, update, context):
         if not self._is_admin(update): return
         
-        # 💡 [V22.10 패치] V17 시크릿 모드 가동 시 스나이퍼 메뉴 패스
         active_tickers = self.cfg.get_active_tickers()
         is_all_v17 = all(self.cfg.get_version(t) == "V17" for t in active_tickers)
         
@@ -547,7 +544,6 @@ class TelegramController:
         est = pytz.timezone('US/Eastern')
         now_est = datetime.datetime.now(est)
         
-        # 💡 [V3.2 패치] 타임라인 통제 상태 조회
         is_sniper_active_time = False
         try:
             nyse = mcal.get_calendar('NYSE')
@@ -567,7 +563,6 @@ class TelegramController:
                 idx_ticker = "SOXX" if t == "SOXL" else "QQQ"
                 dynamic_target_data[t] = await asyncio.to_thread(self.broker.get_dynamic_sniper_target, idx_ticker)
                 
-                # 💡 [V3.2 패치] 객체 내부에 스위치 상태를 주입하여 뷰어로 전달
                 if dynamic_target_data[t] is not None:
                     dynamic_target_data[t].is_sniper_active_time = is_sniper_active_time
             else:
@@ -661,6 +656,8 @@ class TelegramController:
             
         elif action == "EXEC":
             t = sub
+            ver = self.cfg.get_version(t)
+            
             await query.edit_message_text(f"🚀 {t} 수동 강제 전송 시작 (교차 분리)...")
             async with self.tx_lock:
                 cash, holdings = self.broker.get_account_balance()
@@ -676,9 +673,9 @@ class TelegramController:
                 plan = self.strategy.get_plan(t, curr_p, float(h['avg']), int(h['qty']), prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash[t])
                 
                 is_rev = plan.get('is_reverse', False)
-                ver = self.cfg.get_version(t)
                 
                 if ver == "V17": ver_display = "V17 시크릿"
+                elif ver == "V_VWAP": ver_display = "VWAP 자율주행 (페일세이프 장전)"
                 elif ver == "V14": ver_display = "무매4"
                 else: ver_display = "무매3"
                 
@@ -712,14 +709,17 @@ class TelegramController:
 
             await context.bot.send_message(update.effective_chat.id, msg, parse_mode='HTML')
 
-        elif action == "TOGGLE":
-            if sub == "VERSION":
-                ticker = data[2]
-                curr_ver = self.cfg.get_version(ticker)
-                new_ver = "V14" if curr_ver in ["V13", "V17"] else "V13"
-                self.cfg.set_version(ticker, new_ver)
-                new_ver_display = "무매4" if new_ver == "V14" else "무매3"
-                await query.edit_message_text(f"✅ [{ticker}] 운용 로직이 {new_ver_display} 모드로 변경되었습니다. /settlement 로 확인하세요.")
+        elif action == "SET_VER":
+            new_ver = sub
+            ticker = data[2]
+            
+            if new_ver == "V13": new_ver_display = "무매3"
+            elif new_ver == "V14": new_ver_display = "무매4"
+            elif new_ver == "V_VWAP": new_ver_display = "VWAP 자율주행"
+            else: new_ver_display = new_ver
+            
+            self.cfg.set_version(ticker, new_ver)
+            await query.edit_message_text(f"✅ <b>[{ticker}]</b> 퀀트 엔진이 <b>{new_ver_display}</b> 모드로 직접 전환되었습니다.\n/sync 명령어에서 변경된 지시서를 확인하세요.", parse_mode='HTML')
 
         elif action == "TICKER":
             self.cfg.set_active_tickers([sub] if sub != "ALL" else ["SOXL", "TQQQ"])

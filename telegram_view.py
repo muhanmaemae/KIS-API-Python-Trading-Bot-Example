@@ -21,7 +21,7 @@ class TelegramView:
         # 💡 메인 화면은 오리지널 상태를 100% 유지합니다 (수정 없음)
         return (
             f"🌌 <b>[ 인피니트 스노우볼 {latest_version} ]</b>\n" 
-            f"⚡ <b>동적 시계열 스나이퍼 & 무결성 엔진</b> \n\n"
+            f"⚡ <b> 유동성 스나이퍼 & 멀티 코어 엔진</b> \n\n"
             f"🕒 <b>[ 운영 스케줄 ({season_short}) ]</b>\n"
             f"🔹 6시간 간격 : 🔑 API 토큰 자동 갱신\n"
             f"🔹 {sync_time} : 📝 잔고 동기화 & 자동 복리\n"
@@ -144,7 +144,7 @@ class TelegramView:
             t = t_info['ticker']
             v_mode = t_info['version']
             
-            if t_info['t_val'] > (t_info['split'] * 1.1):
+            if t_info.get('t_val', 0.0) > (t_info.get('split', 40.0) * 1.1):
                 body_msg += f"⚠️ <b>[🚨 시스템 긴급 경고: 비정상 T값 폭주 감지!]</b>\n"
                 body_msg += f"🔎 현재 T값(<b>{t_info['t_val']:.4f}T</b>)이 설정된 분할수(<b>{int(t_info['split'])}분할</b>) 초과했습니다!\n"
                 body_msg += f"💡 <b>원인 역산 추정:</b> 수동 매수로 수량이 급증했거나, '/seed' 시드머니 설정이 대폭 축소되었습니다.\n"
@@ -153,6 +153,9 @@ class TelegramView:
             if v_mode == "V17":
                 v_mode_display = "V17 시크릿"
                 main_icon = "🦇"
+            elif v_mode == "V_VWAP":
+                v_mode_display = "VWAP 자율주행"
+                main_icon = "⏳"
             elif v_mode == "V14":
                 v_mode_display = "무매4"
                 main_icon = "💎"
@@ -161,7 +164,7 @@ class TelegramView:
                 main_icon = "💎"
                 
             is_rev = t_info.get('is_reverse', False)
-            proc_status = t_info['plan'].get('process_status', '')
+            proc_status = t_info.get('plan', {}).get('process_status', '')
             tracking_info = t_info.get('tracking_info', {})
             
             if proc_status == "🩸리버스(긴급수혈)":
@@ -174,7 +177,7 @@ class TelegramView:
                 body_msg += f"{icon} <b>[{t}] {v_mode_display} 리버스</b>\n"
                 body_msg += f"📈 진행: <b>{t_info['t_val']:.4f}T / {int(t_info['split'])}분할</b>\n"
             else:
-                bdg_txt = f"당일 예산: ${t_info['one_portion']:,.0f}" if v_mode in ["V14", "V17"] else f"1회 매수금: ${t_info['one_portion']:,.0f}"
+                bdg_txt = f"당일 예산: ${t_info['one_portion']:,.0f}" if v_mode in ["V14", "V17", "V_VWAP"] else f"1회 매수금: ${t_info['one_portion']:,.0f}"
                 body_msg += f"{main_icon} <b>[{t}] {v_mode_display}</b>\n"
                 body_msg += f"📈 진행: <b>{t_info['t_val']:.4f}T / {int(t_info['split'])}분할</b>\n"
             
@@ -239,7 +242,6 @@ class TelegramView:
             sniper_pct = t_info.get('sniper_trigger', 0.0) 
             secret_quarter_target = t_info.get('secret_quarter_target', 0.0)
             
-            # 💡 [V22.16 패치] 통합 지시서는 시장 가중치(Weight)에 따라 단 1줄의 스나이퍼 상태만 표출 (공수 분리)
             if v_mode == "V17":
                 dyn_obj = t_info.get('dynamic_obj')
                 weight = dyn_obj.weight if dyn_obj and hasattr(dyn_obj, 'weight') else 1.0
@@ -269,7 +271,6 @@ class TelegramView:
                             body_msg += f"💥 <b>스나이퍼: 명중 완료</b>\n"
                     else:
                         if weight <= 1.0:
-                            # 🟢 하방 스나이퍼 전용 렌더링 블록 (상방 렌더링 소각)
                             if tracking_info.get('is_tracking', False):
                                 lowest = tracking_info.get('lowest_price', 0.0)
                                 trigger_val = 1.5 if t == "SOXL" else 1.0
@@ -279,7 +280,6 @@ class TelegramView:
                             else:
                                 body_msg += f"📉 <b>스나이퍼: 장전 대기 중</b>\n"
                         else:
-                            # 🚨 상방 스나이퍼 전용 렌더링 블록 (하방 렌더링 소각)
                             if tracking_info.get('is_trailing', False):
                                 peak_price = tracking_info.get('peak_price', 0.0)
                                 trigger_price = tracking_info.get('trigger_price', 0.0)
@@ -288,12 +288,17 @@ class TelegramView:
                                 body_msg += f"🦇 <b>쿼터 스나이퍼: ${secret_quarter_target:.2f} 이상 대기</b>\n"
                             else:
                                 body_msg += f"🦇 <b>쿼터 스나이퍼: 장전 대기 중</b>\n"
+            
+            elif v_mode == "V_VWAP":
+                body_msg += f"⏱️ <b>페일세이프(Fail-Safe):</b> 정규장 17:05 KST 무매 덫 선제 장전\n"
+                body_msg += f"⏱️ <b>VWAP 스케줄:</b> 15:30 EST 기존 LOC 철거 ➔ 지정가 분할 타격\n"
 
             body_msg += f"📋 <b>[주문 계획 - {proc_status}]</b>\n"
             
-            if t_info['plan']['orders']:
-                jup_orders = [o for o in t_info['plan']['orders'] if "줍줍" in o['desc']]
-                n_orders = [o for o in t_info['plan']['orders'] if "줍줍" not in o['desc']]
+            plan_orders = t_info.get('plan', {}).get('orders', [])
+            if plan_orders:
+                jup_orders = [o for o in plan_orders if "줍줍" in o['desc']]
+                n_orders = [o for o in plan_orders if "줍줍" not in o['desc']]
 
                 for o in n_orders:
                     ico = "🔴" if o['side'] == 'BUY' else "🔵"
@@ -316,7 +321,7 @@ class TelegramView:
                     body_msg += f" 🧹 줍줍({len(jup_orders)}개): <b>${prices[0]} ~ ${prices[-1]} (LOC)</b>\n"
                 
                 if is_trade_active:
-                    if t_info['is_locked']: body_msg += f" (✅ 금일 주문 완료/잠금)\n"
+                    if t_info.get('is_locked', False): body_msg += f" (✅ 금일 주문 완료/잠금)\n"
                     else: keyboard.append([InlineKeyboardButton(f"🚀 {t} 주문 실행", callback_data=f"EXEC:{t}")])
             else:
                 body_msg += f" 💤 주문 없음 (관망/예산소진)\n"
@@ -340,6 +345,9 @@ class TelegramView:
             if ver == "V17":
                 icon = "🦇"
                 ver_display = "V17 시크릿"
+            elif ver == "V_VWAP":
+                icon = "⏳"
+                ver_display = "VWAP 자율주행"
             elif ver == "V14":
                 icon = "💎"
                 ver_display = "무매4"
@@ -358,7 +366,6 @@ class TelegramView:
                 atr5, atr14 = atr_data.get(t, (0.0, 0.0))
                 target_obj = dynamic_target_data.get(t)
                 
-                # 💡 [V3.2 UI 교정] 가중치 및 타격선 분리 표출 (개행 및 5칸 들여쓰기 적용)
                 if target_obj is not None and hasattr(target_obj, 'metric_val'):
                     m_val = target_obj.metric_val
                     m_name = target_obj.metric_name
@@ -382,21 +389,32 @@ class TelegramView:
                     msg += f"▫️ 지표 연산 실패\n     (가중치 1.00배 기본값 방어 중)\n"
                     msg += f"▫️ 고정 타격선(1년 ATR): -{base_amp:.2f}%\n"
                     msg += f"▫️ 자율제어: 🔫하방[ON] / 🛡️상방[OFF]\n\n"
+                    
+            elif ver == "V_VWAP":
+                msg += f"📊 <b>VWAP 유동성 프로파일 엔진 대기 중:</b>\n"
+                msg += f"▫️ 15:30 EST부터 30분간 U-Curve 가중치 분할 매매 작동\n\n"
+                
             else:
                 msg += "\n"
                 
             row1 = [
-                InlineKeyboardButton(f"⚙️ {t} 분할", callback_data=f"INPUT:SPLIT:{t}"), 
-                InlineKeyboardButton(f"🎯 {t} 목표", callback_data=f"INPUT:TARGET:{t}"),
-                InlineKeyboardButton(f"💸 {t} 복리", callback_data=f"INPUT:COMPOUND:{t}")
+                InlineKeyboardButton("💎 V3 (무매3)", callback_data=f"SET_VER:V13:{t}"),
+                InlineKeyboardButton("💎 V4 (무매4)", callback_data=f"SET_VER:V14:{t}"),
+                InlineKeyboardButton("⏳ VWAP (자율)", callback_data=f"SET_VER:V_VWAP:{t}")
             ]
             keyboard.append(row1)
             
             row2 = [
-                InlineKeyboardButton(f"🔄 {t} 무매3/무매4 전환", callback_data=f"TOGGLE:VERSION:{t}"),
-                InlineKeyboardButton(f"✂️ {t} 액면보정", callback_data=f"INPUT:STOCK_SPLIT:{t}")
+                InlineKeyboardButton(f"⚙️ {t} 분할", callback_data=f"INPUT:SPLIT:{t}"), 
+                InlineKeyboardButton(f"🎯 {t} 목표", callback_data=f"INPUT:TARGET:{t}"),
+                InlineKeyboardButton(f"💸 {t} 복리", callback_data=f"INPUT:COMPOUND:{t}")
             ]
             keyboard.append(row2)
+            
+            row3 = [
+                InlineKeyboardButton(f"✂️ {t} 액면보정", callback_data=f"INPUT:STOCK_SPLIT:{t}")
+            ]
+            keyboard.append(row3)
             
         return msg, InlineKeyboardMarkup(keyboard)
 
