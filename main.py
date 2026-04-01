@@ -100,7 +100,8 @@ def main():
         ("reset", bot.cmd_reset), 
         ("version", bot.cmd_version),
         ("v17", bot.cmd_v17),
-        ("v4", bot.cmd_v4)
+        ("v4", bot.cmd_v4),
+        ("p4006", bot.cmd_p4006)  # 💡 [수술 완료] P매매 극비 트리거 연결
     ]:
         app.add_handler(CommandHandler(cmd, handler))
     app.add_handler(CallbackQueryHandler(bot.handle_callback))
