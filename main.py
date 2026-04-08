@@ -1,6 +1,7 @@
 # ==========================================================
 # [main.py]
 # ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
+# 💡 [V24.06] 애프터마켓 3% 로터리 덫 (16:05 EST) 스케줄러 이식 완료
 # ==========================================================
 
 import os
@@ -17,6 +18,10 @@ from strategy import InfiniteStrategy
 from vwap_strategy import VwapStrategy
 from telegram_bot import TelegramController
 
+# 💡 [V_REV 신규 역추세 엔진 의존성 주입]
+from queue_ledger import QueueLedger
+from strategy_reversion import ReversionStrategy
+
 # 💡 [핵심 수술] 분할된 2개의 스케줄러 파일에서 각각 역할에 맞게 함수를 임포트
 from scheduler_core import (
     scheduled_token_check,
@@ -30,7 +35,10 @@ from scheduler_core import (
 from scheduler_trade import (
     scheduled_regular_trade,
     scheduled_sniper_monitor,
-    scheduled_vwap_trade
+    scheduled_vwap_trade,
+    scheduled_vwap_init_and_cancel,  
+    scheduled_emergency_liquidation,
+    scheduled_after_market_lottery  # 💡 [핵심 수술] 애프터마켓 로터리 덫 임포트
 )
 
 if not os.path.exists('data'):
@@ -76,8 +84,6 @@ async def scheduled_volatility_scan(context):
     app_data = context.job.data
     cfg = app_data['cfg']
     
-    # 예비 퀀트 연산 로직 (실제 VXN/HV 팩트 데이터 Fetcher 모듈과 연동 필요)
-    # 현재는 아키텍처 구성을 위해 임의의 래퍼(Wrapper) 텍스트를 출력합니다.
     print("\n" + "=" * 60)
     print("📈 [자율주행 변동성 스캔 완료] (10:20 EST 스냅샷)")
     
@@ -90,10 +96,8 @@ async def scheduled_volatility_scan(context):
     if not active_tickers:
         print("📊 현재 운용 중인 종목이 없습니다.")
     else:
-        # 다중 종목 1-Tier 압축 렌더링
         briefing_lines = []
         for ticker in active_tickers:
-            # TODO: 야후 파이낸스/KIS 연동을 통한 실제 가중치 연산
             dummy_weight = 0.85 if ticker == "TQQQ" else 1.15 
             status_text = "OFF 권장" if dummy_weight <= 1.0 else "ON 권장"
             briefing_lines.append(f"{ticker}: {dummy_weight} ({status_text})")
@@ -118,9 +122,15 @@ def main():
     perform_self_cleaning()
     
     if ADMIN_CHAT_ID: cfg.set_chat_id(ADMIN_CHAT_ID)
+    
     broker = KoreaInvestmentBroker(APP_KEY, APP_SECRET, CANO, ACNT_PRDT_CD)
     strategy = InfiniteStrategy(cfg)
     vwap_strategy = VwapStrategy(cfg)
+    
+    # 💡 [V_REV] 독립 모듈 객체 초기화
+    queue_ledger = QueueLedger()
+    strategy_rev = ReversionStrategy()
+    
     tx_lock = asyncio.Lock()
     bot = TelegramController(cfg, broker, strategy, tx_lock)
     
@@ -138,10 +148,10 @@ def main():
         ("reset", bot.cmd_reset), 
         ("version", bot.cmd_version),
         ("v17", bot.cmd_v17),
-        ("v4", bot.cmd_v4),
-        ("p4006", bot.cmd_p4006)  # 💡 [수술 완료] P매매 극비 트리거 연결
+        ("v4", bot.cmd_v4)
     ]:
         app.add_handler(CommandHandler(cmd, handler))
+        
     app.add_handler(CallbackQueryHandler(bot.handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
     
@@ -152,6 +162,8 @@ def main():
             'broker': broker, 
             'strategy': strategy, 
             'vwap_strategy': vwap_strategy,
+            'queue_ledger': queue_ledger,  
+            'strategy_rev': strategy_rev,  
             'bot': bot, 
             'tx_lock': tx_lock
         }
@@ -168,17 +180,26 @@ def main():
         for hour in [17, 18]:
             jq.run_daily(scheduled_force_reset, time=datetime.time(hour, 0, tzinfo=kst), days=(0,1,2,3,4), chat_id=cfg.get_chat_id(), data=app_data)
             
-        # 💡 [V23.05] 자율주행 변동성 지표 1-Tier 스캔 (EST 10:20 - 시차 자동 계산)
         jq.run_daily(scheduled_volatility_scan, time=datetime.time(10, 20, tzinfo=est), days=(0,1,2,3,4), chat_id=cfg.get_chat_id(), data=app_data)
         
         # 2. 실전 전투 매매 스케줄러 (trade)
+        # 💡 [Phase 1] 프리장(17:05 KST)에 '선제적 양방향 LOC 덫' 사전 전송 (블랙스완/서버다운 대비)
         for hour in [17, 18]:
             jq.run_daily(scheduled_regular_trade, time=datetime.time(hour, 5, tzinfo=kst), days=(0,1,2,3,4), chat_id=cfg.get_chat_id(), data=app_data)
         
-        # 💡 스나이퍼 감시 및 VWAP 슬라이싱 스케줄러 (60초 간격 무한 반복)
+        # 💡 [Phase 2] 장 후반 15:30 EST (04:30 KST) 기상: 사전 LOC 전량 취소 후 VWAP 1분봉 타격 준비
+        jq.run_daily(scheduled_vwap_init_and_cancel, time=datetime.time(15, 30, tzinfo=est), days=(0,1,2,3,4), chat_id=cfg.get_chat_id(), data=app_data)
+
+        # 💡 스나이퍼 감시 및 VWAP 슬라이싱 (60초 간격 무한 반복 - 내부에서 15:30 EST 이후에만 작동하도록 통제됨)
         jq.run_repeating(scheduled_sniper_monitor, interval=60, chat_id=cfg.get_chat_id(), data=app_data)
         jq.run_repeating(scheduled_vwap_trade, interval=60, chat_id=cfg.get_chat_id(), data=app_data)
         
+        # 💡 [Phase 3] 15:59 EST 긴급 수혈 스케줄러 (MOC)
+        jq.run_daily(scheduled_emergency_liquidation, time=datetime.time(15, 59, tzinfo=est), days=(0,1,2,3,4), chat_id=cfg.get_chat_id(), data=app_data)
+        
+        # 💡 [Phase 4] 애프터마켓 로터리 덫 (16:05 EST)
+        jq.run_daily(scheduled_after_market_lottery, time=datetime.time(16, 5, tzinfo=est), days=(0,1,2,3,4), chat_id=cfg.get_chat_id(), data=app_data)
+
         # 3. 자정 청소 (core)
         jq.run_daily(scheduled_self_cleaning, time=datetime.time(6, 0, tzinfo=kst), days=tuple(range(7)), chat_id=cfg.get_chat_id(), data=app_data)
         
