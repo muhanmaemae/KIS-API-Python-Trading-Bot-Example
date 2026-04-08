@@ -1,8 +1,9 @@
 # ==========================================================
-# [main.py] - Part 1/2 부 (상반부)
+# [main.py]
 # ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
 # 💡 [V24.10] 텔레그램 API 통신 타임아웃(TimedOut) 방어 및 커넥션 풀 최적화 이식 완료
 # 💡 [V24.11 수술] VolatilityEngine 동적 연결 및 TelegramController 의존성 주입
+# 💡 [V24.15 대수술] V_VWAP 플러그인 의존성 100% 영구 적출 및 2대 코어 체제 확립
 # ==========================================================
 
 import os
@@ -16,7 +17,6 @@ from dotenv import load_dotenv
 from config import ConfigManager
 from broker import KoreaInvestmentBroker
 from strategy import InfiniteStrategy
-from vwap_strategy import VwapStrategy
 from telegram_bot import TelegramController
 
 # 💡 [V_REV 신규 역추세 엔진 의존성 주입]
@@ -123,7 +123,7 @@ def main():
     latest_version = cfg.get_latest_version() 
     
     print("=" * 60)
-    print(f"🚀 앱솔루트 스노우볼 퀀트 엔진 {latest_version} (VWAP 스플릿 & 경량화 아키텍처 탑재)")
+    print(f"🚀 앱솔루트 스노우볼 퀀트 엔진 {latest_version} (초경량 2대 코어 아키텍처 탑재)")
     print(f"📅 날짜 정보: {season_msg}")
     print(f"⏰ 자동 동기화: 08:30(여름) / 09:30(겨울) 자동 변경")
     print(f"🛡️ 1-Tier 자율주행 지표 스캔 대기 중... (매일 10:20 EST 격발)")
@@ -135,7 +135,6 @@ def main():
     
     broker = KoreaInvestmentBroker(APP_KEY, APP_SECRET, CANO, ACNT_PRDT_CD)
     strategy = InfiniteStrategy(cfg)
-    vwap_strategy = VwapStrategy(cfg)
     
     # 💡 [V_REV] 독립 모듈 객체 초기화
     queue_ledger = QueueLedger()
@@ -149,8 +148,7 @@ def main():
         cfg, 
         broker, 
         strategy, 
-        tx_lock, 
-        vwap_strategy=vwap_strategy, 
+        tx_lock,
         queue_ledger=queue_ledger, 
         strategy_rev=strategy_rev
     )
@@ -167,6 +165,7 @@ def main():
         .build()
     )
     
+    # 💡 [V24.14 프론트엔드 다이어트] v17, v4 핸들러 완벽 소각
     for cmd, handler in [
         ("start", bot.cmd_start), 
         ("record", bot.cmd_record), 
@@ -177,9 +176,7 @@ def main():
         ("ticker", bot.cmd_ticker), 
         ("mode", bot.cmd_mode), 
         ("reset", bot.cmd_reset), 
-        ("version", bot.cmd_version),
-        ("v17", bot.cmd_v17),
-        ("v4", bot.cmd_v4)
+        ("version", bot.cmd_version)
     ]:
         app.add_handler(CommandHandler(cmd, handler))
         
@@ -192,7 +189,6 @@ def main():
             'cfg': cfg, 
             'broker': broker, 
             'strategy': strategy, 
-            'vwap_strategy': vwap_strategy,
             'queue_ledger': queue_ledger,  
             'strategy_rev': strategy_rev,  
             'bot': bot, 
@@ -218,10 +214,10 @@ def main():
         for hour in [17, 18]:
             jq.run_daily(scheduled_regular_trade, time=datetime.time(hour, 5, tzinfo=kst), days=(0,1,2,3,4), chat_id=cfg.get_chat_id(), data=app_data)
         
-        # 💡 [Phase 2] 장 후반 15:30 EST (04:30 KST) 기상: 사전 LOC 전량 취소 후 VWAP 1분봉 타격 준비
+        # 💡 [Phase 2] 장 후반 15:30 EST (04:30 KST) 기상: 사전 LOC 전량 취소 후 1분봉 타격 준비 (V-REV 전용)
         jq.run_daily(scheduled_vwap_init_and_cancel, time=datetime.time(15, 30, tzinfo=est), days=(0,1,2,3,4), chat_id=cfg.get_chat_id(), data=app_data)
 
-        # 💡 스나이퍼 감시 및 VWAP 슬라이싱 (60초 간격 무한 반복 - 내부에서 15:30 EST 이후에만 작동하도록 통제됨)
+        # 💡 스나이퍼 감시 및 V-REV 슬라이싱 (60초 간격 무한 반복 - 내부에서 15:30 EST 이후에만 작동하도록 통제됨)
         jq.run_repeating(scheduled_sniper_monitor, interval=60, chat_id=cfg.get_chat_id(), data=app_data)
         jq.run_repeating(scheduled_vwap_trade, interval=60, chat_id=cfg.get_chat_id(), data=app_data)
         

@@ -1,7 +1,7 @@
 # ==========================================================
 # [telegram_view.py] - Part 1/2 부 (상반부)
 # ⚠️ V-REV 장부 강제 초기화 3중 경고 방어막 유지
-# 💡 [핵심] 갓 모드 큐 관리 메뉴 UI 간소화 완료
+# 💡 [V24.15 대수술] 2대 코어(V14, V-REV) 체제 UI 최적화 및 V_VWAP 적출
 # ==========================================================
 import os
 import math
@@ -50,7 +50,7 @@ class TelegramView:
 
         return (
             f"🌌 <b>[ 인피니트 스노우볼 {latest_version} ]</b>\n" 
-            f"💠 <b> V-REV 역추세 & 자율주행 퀀트 코어 </b>\n\n" 
+            f"💠 <b> V-REV 역추세 & V14 무매 퀀트 코어 </b>\n\n" 
             f"🕒 <b>[ 운영 스케줄 ({season_short}) ]</b>\n"
             f"🔹 6시간 간격 : 🔑 API 토큰 자동 갱신\n"
             f"🔹 {sync_time} : 📝 잔고 동기화 & 자동 복리\n"
@@ -212,7 +212,7 @@ class TelegramView:
 # ==========================================================
 # [telegram_view.py] - Part 2/2 부 (하반부)
 # ⚠️ V-REV 설정줄 숨김 및 종목 간 띄어쓰기(엔터) 간격 완벽 교정
-# 💡 [핵심] 주문 체결 상태(is_locked) 기반 동적 RP 권장액 산출 엔진 탑재
+# 💡 [V24.15 대수술] 2대 코어(V14, V-REV) 체제 UI 최적화 및 V_VWAP 적출
 # ==========================================================
 
     def create_sync_report(self, status_text, dst_text, cash, rp_amount, ticker_data, is_trade_active, p_trade_data=None):
@@ -254,20 +254,12 @@ class TelegramView:
                 body_msg += f"💡 <b>원인 역산 추정:</b> 수동 매수로 수량이 급증했거나, '/seed' 시드머니 설정이 대폭 축소되었습니다.\n"
                 body_msg += f"🛡️ <b>가동 조치:</b> 마이너스 호가 차단용 절대 하한선($0.01) 방어막 가동 중!\n\n"
 
-            if v_mode == "V17":
-                v_mode_display = "V17 시크릿"
-                main_icon = "🦇"
-            elif v_mode == "V_VWAP":
-                v_mode_display = "VWAP 자율주행"
-                main_icon = "⏳"
-            elif v_mode == "V_REV":
+            # 💡 [다이어트 완료] 오직 V-REV와 V14(디폴트) 2대 코어만 판별
+            if v_mode == "V_REV":
                 v_mode_display = "V_REV 역추세"
                 main_icon = "⚖️"
-            elif v_mode == "V14":
-                v_mode_display = "무매4"
-                main_icon = "💎"
             else:
-                v_mode_display = "무매3"
+                v_mode_display = "무매4"
                 main_icon = "💎"
                 
             is_rev = t_info.get('is_reverse', False)
@@ -288,7 +280,7 @@ class TelegramView:
                 body_msg += f"{main_icon} <b>[{t}] {v_mode_display}</b>\n"
                 body_msg += f"📈 큐(Queue): <b>{t_info.get('v_rev_q_lots', 0)}개 로트 대기 중 (총 {t_info.get('v_rev_q_qty', 0)}주)</b>\n"
             else:
-                bdg_txt = f"당일 예산: ${t_info['one_portion']:,.0f}" if v_mode in ["V14", "V17", "V_VWAP"] else f"1회 매수금: ${t_info['one_portion']:,.0f}"
+                bdg_txt = f"당일 예산: ${t_info['one_portion']:,.0f}"
                 body_msg += f"{main_icon} <b>[{t}] {v_mode_display}</b>\n"
                 body_msg += f"📈 진행: <b>{t_info['t_val']:.4f}T / {int(t_info['split'])}분할</b>\n"
             
@@ -323,17 +315,11 @@ class TelegramView:
             
             if v_mode != "V_REV":
                 if is_rev:
-                    if v_mode == "V17":
-                        body_msg += f"⚙️ 🌟 5일선 별지점: ${t_info['star_price']:.2f}\n"
-                    else:
-                        body_msg += f"⚙️ 🌟 5일선 별지점: ${t_info['star_price']:.2f} | 🎯감시: {sniper_status_txt}\n"
+                    body_msg += f"⚙️ 🌟 5일선 별지점: ${t_info['star_price']:.2f} | 🎯감시: {sniper_status_txt}\n"
                 else:
-                    if v_mode == "V17":
-                        body_msg += f"⚙️ 🎯 {t_info['target']}% | ⭐ {t_info['star_pct']}%\n"
-                    else:
-                        body_msg += f"⚙️ 🎯 {t_info['target']}% | ⭐ {t_info['star_pct']}% | 🎯감시: {sniper_status_txt}\n"
+                    body_msg += f"⚙️ 🎯 {t_info['target']}% | ⭐ {t_info['star_pct']}% | 🎯감시: {sniper_status_txt}\n"
                     
-                if sniper_status_txt == "ON" and v_mode != "V17":
+                if sniper_status_txt == "ON":
                     if not is_trade_active:
                         body_msg += f"🎯 상방 스나이퍼: 감시 종료 (장마감)\n"
                     elif tracking_info.get('is_trailing', False):
@@ -350,61 +336,7 @@ class TelegramView:
                         if sn_target > 0:
                             body_msg += f"🎯 상방 스나이퍼: ${sn_target:.2f} 이상 대기\n"
             
-            hybrid_target = t_info.get('hybrid_target', 0.0)
-            sniper_pct = t_info.get('sniper_trigger', 0.0) 
-            secret_quarter_target = t_info.get('secret_quarter_target', 0.0)
-            
-            if v_mode == "V17":
-                dyn_obj = t_info.get('dynamic_obj')
-                weight = dyn_obj.weight if dyn_obj and hasattr(dyn_obj, 'weight') else 1.0
-                
-                if not is_trade_active:
-                    if weight <= 1.0:
-                        body_msg += f"📉 <b>스나이퍼: 금일 감시 종료 (장마감)</b>\n"
-                    else:
-                        body_msg += f"🦇 <b>쿼터 스나이퍼: 금일 감시 종료 (장마감)</b>\n"
-                else:
-                    if "가로채기" in proc_status:
-                        hit_price = tracking_info.get('hit_price', 0.0)
-                        lowest = tracking_info.get('lowest_price', 0.0)
-                        if hit_price == 0.0:
-                            cache_file = f"data/sniper_cache_{t}.json"
-                            if os.path.exists(cache_file):
-                                try:
-                                    with open(cache_file, 'r') as f:
-                                        c_data = json.load(f)
-                                        hit_price = c_data.get('hit_price', 0.0)
-                                        lowest = c_data.get('lowest_price', 0.0)
-                                except: pass
-                        if hit_price > 0 and lowest > 0:
-                            bounce_pct = ((hit_price - lowest) / lowest) * 100
-                            body_msg += f"💥 <b>명중: ${hit_price:.2f} (${lowest:.2f} 대비 +{bounce_pct:.2f}%)</b>\n"
-                        else:
-                            body_msg += f"💥 <b>스나이퍼: 명중 완료</b>\n"
-                    else:
-                        if weight <= 1.0:
-                            if tracking_info.get('is_tracking', False):
-                                lowest = tracking_info.get('lowest_price', 0.0)
-                                trigger_val = 1.5 if t == "SOXL" else 1.0
-                                body_msg += f"🎯 <b>장전선 이탈! 장중 바닥 추적 중</b>\n  <b>(최저: ${lowest:.2f} / 목표반등: +{trigger_val}%)</b>\n"
-                            elif hybrid_target > 0:
-                                body_msg += f"📉 <b>스나이퍼: {sniper_pct:.2f}% 진폭(TR) 대기</b>\n"
-                            else:
-                                body_msg += f"📉 <b>스나이퍼: 장전 대기 중</b>\n"
-                        else:
-                            if tracking_info.get('is_trailing', False):
-                                peak_price = tracking_info.get('peak_price', 0.0)
-                                trigger_price = tracking_info.get('trigger_price', 0.0)
-                                body_msg += f"🎯 <b>쿼터 추적(${trigger_price:.2f}) 중 (고가: ${peak_price:.2f})</b>\n"
-                            elif secret_quarter_target > 0:
-                                body_msg += f"🦇 <b>쿼터 스나이퍼: ${secret_quarter_target:.2f} 이상 대기</b>\n"
-                            else:
-                                body_msg += f"🦇 <b>쿼터 스나이퍼: 장전 대기 중</b>\n"
-            
-            elif v_mode == "V_VWAP":
-                body_msg += f"⏱️ <b>페일세이프(Fail-Safe):</b> 정규장 17:05 KST 무매 덫 선제 장전\n"
-                body_msg += f"⏱️ <b>VWAP 스케줄:</b> 15:30 EST 기존 LOC 철거 ➔ 지정가 분할 타격\n"
-                
+            # 💡 [다이어트 완료] V_VWAP 표출 텍스트 소각
             elif v_mode == "V_REV":
                 body_msg += f"⚖️ <b>역추세 LIFO 큐(Queue) 엔진 스탠바이</b>\n"
                 body_msg += f"⏱️ <b>VWAP 스케줄:</b> 15:30 EST 앵커 세팅 ➔ 1분 단위 교차 타격\n"
@@ -459,9 +391,6 @@ class TelegramView:
                         if "수혈" in desc: 
                             ico = "🩸"
                             desc = desc.replace("🩸", "")
-                        elif "시크릿" in desc: 
-                            ico = "🦇"
-                            desc = desc.replace("🦇", "")
                             
                         type_str = "" if o['type'] == 'LIMIT' else f"({o['type']})"
                         type_disp = f" {type_str}" if type_str else ""
@@ -497,27 +426,16 @@ class TelegramView:
         msg = "⚙️ <b>[ 현재 설정 및 복리 상태 ]</b>\n\n"
         keyboard = []
         
-        if dynamic_target_data is None:
-            dynamic_target_data = {}
-        
         for t in active_tickers:
             ver = config.get_version(t)
             
-            if ver == "V17":
-                icon = "🦇"
-                ver_display = "V17 시크릿"
-            elif ver == "V_VWAP":
-                icon = "⏳"
-                ver_display = "VWAP 자율주행"
-            elif ver == "V_REV":
+            # 💡 [다이어트 완료] V14, V-REV 2대 코어만 판별
+            if ver == "V_REV":
                 icon = "⚖️"
                 ver_display = "V_REV 역추세"
-            elif ver == "V14":
-                icon = "💎"
-                ver_display = "무매4"
             else:
                 icon = "💎"
-                ver_display = "무매3"
+                ver_display = "무매4"
                 
             split_cnt = int(config.get_split_count(t))
             target_pct = config.get_target_profit(t)
@@ -526,49 +444,17 @@ class TelegramView:
             msg += f"{icon} <b>{t} ({ver_display} 모드)</b>\n"
             msg += f"▫️ 분할: {split_cnt}회\n▫️ 목표: {target_pct}%\n▫️ 자동복리: {comp_rate}%\n"
             
-            if ver == "V17":
-                atr5, atr14 = atr_data.get(t, (0.0, 0.0))
-                target_obj = dynamic_target_data.get(t)
-                
-                if target_obj is not None and hasattr(target_obj, 'metric_val'):
-                    m_val = target_obj.metric_val
-                    m_name = target_obj.metric_name
-                    base_amp = abs(target_obj.base_amp)
-                    
-                    msg += f"📊 <b>실시간 동적 변동성 (V3.2 마스터 스위치):</b>\n"
-                    msg += f"▫️ ATR5 ({atr5:.1f}%) / ATR14 ({atr14:.1f}%)\n"
-                    msg += f"▫️ {m_name} (당일 절대지수): {m_val:.2f}\n"
-                    msg += f"▫️ 고정 타격선(1년 ATR): -{base_amp:.2f}%\n"
-                    
-                    if m_val <= 20.0:
-                        msg += f"▫️ 자율제어: 🔫하방[ON] / 🛡️상방[OFF]\n\n"
-                    else:
-                        msg += f"▫️ 자율제어: 🔫하방[OFF] / 🛡️상방[ON]\n\n"
-                else:
-                    base_amp = 8.79 if t == "SOXL" else 4.95
-                    msg += f"📊 <b>실시간 동적 변동성 (V3.2 마스터 스위치):</b>\n"
-                    msg += f"▫️ ATR5 ({atr5:.1f}%) / ATR14 ({atr14:.1f}%)\n"
-                    msg += f"▫️ 지표 연산 실패 (기본값 방어 중)\n"
-                    msg += f"▫️ 고정 타격선(1년 ATR): -{base_amp:.2f}%\n"
-                    msg += f"▫️ 자율제어: 🔫하방[ON] / 🛡️상방[OFF]\n\n"
-                    
-            elif ver == "V_VWAP":
-                msg += f"📊 <b>VWAP 유동성 프로파일 엔진 대기 중:</b>\n"
-                msg += f"▫️ 15:30 EST부터 30분간 U-Curve 가중치 분할 매매 작동\n\n"
-                
-            elif ver == "V_REV":
+            if ver == "V_REV":
                 msg += f"⚖️ <b>역추세(Reversion) 하이브리드 엔진 스탠바이:</b>\n"
                 msg += f"▫️ 전일 종가 앵커 기준 LIFO 큐 교차 매매 대기 중\n\n"
                 row_init = [InlineKeyboardButton(f"🔌 {t} V-REV 큐 장부 초기화 (물량이관)", callback_data=f"SET_INIT:V_REV:{t}")]
                 keyboard.append(row_init)
-                
             else:
                 msg += "\n"
                 
+            # 💡 [다이어트 완료] V14 무매4 전환 버튼 단일 유지
             row1 = [
-                InlineKeyboardButton("💎 V3 (무매3)", callback_data=f"SET_VER:V13:{t}"),
-                InlineKeyboardButton("💎 V4 (무매4)", callback_data=f"SET_VER:V14:{t}"),
-                InlineKeyboardButton("⏳ VWAP (자율)", callback_data=f"SET_VER:V_VWAP:{t}")
+                InlineKeyboardButton("💎 V14 (무매4)", callback_data=f"SET_VER:V14:{t}")
             ]
             keyboard.append(row1)
             

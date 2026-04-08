@@ -1,14 +1,12 @@
 # ==========================================================
 # [scheduler_trade.py] (1부 / 2부)
 # ⚠️ 수술 내역: 
-# 1. V-REV 잭팟 잔량 강제 청산 (Sweep Finisher) 유지
-# 2. V_VWAP 0주 새출발 실종 버그 패치 (평단가 15% 할증) 유지
-# 3. 🚨 [V_VWAP 데드존 전면 철거] 평단가(actual_avg) 초과 시 매수 동결 방어막 제거. 
-#    익절 목표가(star_price) 도달 전까지 전량 매수(불타기) 강제 집행.
-# 4. 🚨 [V-REV 데드존 구축] 목표가(target_price) 미만 시 매도 보류 및 잔량 누적(Carry-over) 적용
-# 5. 🚨 [V-REV 1층 스윕 피니셔 탑재] 장 마감 2분 전 1층 타점(1.006) 이상일 경우 1층 잔여 물량 전량 청산
-# 6. 🚨 [애프터마켓 3% 로터리 덫 신설] KST 05:05 (16:05 EST) 잔여 물량 전량 +3% 지정가(After-market) 전송
-# 💡 [V24.09 패치] 외부 데이터 통신 결측치(None) Safe Casting 전방위 적용 완료
+# 1. 🚨 [타임존 락온] 스나이퍼 기상 통제 및 15:30 EST 통제에 엄격한 미국 동부 시간 적용 완료
+# 2. 🚨 [거짓 잭팟 차단] 프리장 비정상 스파이크 호가(Glitch Tick) 방어용 거래량 이중 필터 탑재
+# 3. V-REV 잭팟 잔량 강제 청산 (Sweep Finisher) 유지
+# 4. [V-REV 데드존 구축] 목표가 미만 시 매도 보류 및 잔량 누적(Carry-over) 적용
+# 5. [애프터마켓 3% 로터리 덫 신설] KST 05:05 (16:05 EST) 잔여 물량 전량 +3% 지정가 전송
+# 💡 [V24.15 대수술] V_VWAP 스케줄러 100% 영구 소각 및 2대 코어(V14, V-REV) 최적화
 # ==========================================================
 import os
 import logging
@@ -30,6 +28,7 @@ from scheduler_core import is_market_open, get_budget_allocation, get_target_hou
 async def scheduled_sniper_monitor(context):
     if not is_market_open(): return
     
+    # 💡 [핵심 수술] 엄격한 EST/EDT 타임존 락온
     est = pytz.timezone('US/Eastern')
     now_est = datetime.datetime.now(est)
     
@@ -64,20 +63,14 @@ async def scheduled_sniper_monitor(context):
     cfg, broker, strategy, tx_lock = app_data['cfg'], app_data['broker'], app_data['strategy'], app_data['tx_lock']
     chat_id = context.job.chat_id
     
-    target_cache = app_data.setdefault('dynamic_targets', {})
     tracking_cache = app_data.setdefault('sniper_tracking', {})
-    master_switch_alerted = app_data.setdefault('master_switch_alerted', {}) 
     
     today_est_str = now_est.strftime('%Y%m%d')
-    saved_date = target_cache.get('date')
+    saved_date = tracking_cache.get('date')
     
     if saved_date != today_est_str:
-        target_cache.clear()
-        target_cache['date'] = today_est_str
         tracking_cache.clear()
         tracking_cache['date'] = today_est_str
-        master_switch_alerted.clear()
-        master_switch_alerted['date'] = today_est_str
         
         if saved_date is not None:
             try:
@@ -95,34 +88,30 @@ async def scheduled_sniper_monitor(context):
             for t in cfg.get_active_tickers():
                 version = cfg.get_version(t)
                 
-                if version in ["V_VWAP", "V_REV"] and now_est.hour == 15 and now_est.minute >= 29:
-                    continue
-                
+                # 💡 [다이어트 완료] V_REV는 스나이퍼 로직에서 완전히 제외되며 V_VWAP 관련 찌꺼기 완벽 소각
                 if version == "V_REV":
                     continue
                 
                 is_upward_sniper_on = cfg.get_upward_sniper_mode(t)
                 
-                if version != "V17" and not is_upward_sniper_on:
+                if not is_upward_sniper_on:
                     continue
                 
-                lock_buy = cfg.check_lock(t, "SNIPER_BUY")
                 lock_sell = cfg.check_lock(t, "SNIPER_SELL")
                 
-                if lock_buy and lock_sell:
+                if lock_sell:
                     continue
                 
-                # 💡 [핵심 수술] 보유 수량 및 평단가 강제 안전 형변환
                 h = holdings.get(t) or {}
                 qty = int(float(h.get('qty') or 0))
                 avg_price = float(h.get('avg') or 0.0)
                 if qty == 0: continue
                 
-                # 💡 [핵심 수술] API 데이터 Safe Casting
                 curr_p = float(await asyncio.to_thread(broker.get_current_price, t) or 0.0)
                 prev_c = float(await asyncio.to_thread(broker.get_previous_close, t) or 0.0)
                 if curr_p <= 0: continue
                 
+                df_1min = None
                 try:
                     df_1min = await asyncio.to_thread(broker.get_1min_candles_df, t)
                     vwap_status = strategy.analyze_vwap_dominance(df_1min)
@@ -139,104 +128,15 @@ async def scheduled_sniper_monitor(context):
                 
                 if actual_day_high > tracking_info['day_high']:
                     tracking_info['day_high'] = actual_day_high
-                
-                if not is_sniper_active_time:
-                    continue
-                
-                if version == "V17":
-                    idx_ticker = "SOXX" if t == "SOXL" else "QQQ"
-                    current_weight = cfg.get_sniper_multiplier(t)
-                    cached_data = target_cache.get(t)
-                    
-                    if cached_data is None or cached_data.get('weight') != current_weight:
-                        tgt = await asyncio.to_thread(broker.get_dynamic_sniper_target, idx_ticker)
-                        if tgt is not None:
-                            target_cache[t] = {'value': float(tgt), 'weight': current_weight, 'metric_weight': tgt.weight}
-                        else:
-                            target_cache[t] = {'value': (7.59 if t=="SOXL" else 6.18), 'weight': current_weight, 'metric_weight': 1.0}
 
-                    sniper_pct = target_cache[t]['value']
-                    market_weight = target_cache[t]['metric_weight']
-                    
-                    if not master_switch_alerted.get(t, False):
-                        master_switch_alerted[t] = True
-                        state_msg = "🔫 하방 매수[ON] / 🛡️ 상방 익절[OFF]" if market_weight <= 1.0 else "🔫 하방 매수[OFF] / 🛡️ 상방 익절[ON]"
-                        msg = f"📡 <b>[{t}] 마스터 스위치 락온 (10:20 EST)</b>\n"
-                        msg += f"▫️ 공포 가중치: {market_weight:.2f}배\n"
-                        msg += f"▫️ 당일 자율제어: {state_msg}\n"
-                        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
-
-                    if market_weight <= 1.0: 
-                        if not lock_buy:
-                            candle = await asyncio.to_thread(broker.get_current_5min_candle, t)
-                            if candle:
-                                c_open, c_high, c_low, c_close = candle['open'], candle['high'], candle['low'], candle['close']
-                                c_vol, c_vol_ma20 = candle['volume'], candle.get('vol_ma20', candle['volume'])
-                                c_vwap = candle.get('vwap', 0.0)
-                                
-                                if c_high > tracking_info['day_high']:
-                                    tracking_info['day_high'] = c_high
-                                    
-                                current_drop = (tracking_info['day_high'] - c_low) / tracking_info['day_high'] if tracking_info['day_high'] > 0 else 0
-                                
-                                if not tracking_info['is_tracking'] and current_drop >= (abs(sniper_pct) / 100.0):
-                                    tracking_info['is_tracking'] = True
-                                    tracking_info['armed_price'] = tracking_info['day_high'] * (1 - (abs(sniper_pct) / 100.0))
-                                    tracking_info['lowest_price'] = c_low
-                                    
-                                    if not tracking_info['alerted']:
-                                        msg = f"🎯 <b>[{t}] 하방 매수 스나이퍼 안전장치 해제!</b>\n"
-                                        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
-                                        tracking_info['alerted'] = True
-                                        
-                                if tracking_info['is_tracking']:
-                                    if c_low < tracking_info['lowest_price']: tracking_info['lowest_price'] = c_low
-                                        
-                                    trigger_pct = 1.5 if t == "SOXL" else 1.0
-                                    is_yangbong = c_close > c_open
-                                    rebound_pct = (c_close - tracking_info['lowest_price']) / tracking_info['lowest_price'] * 100 if tracking_info['lowest_price'] > 0 else 0
-                                    is_volume_spike = (c_vol > c_vol_ma20) if is_regular_session else True
-                                    
-                                    if is_yangbong and rebound_pct >= trigger_pct and is_volume_spike:
-                                        if (c_vwap <= 0 or c_close < c_vwap):
-                                            if vwap_status.get('is_strong_down', False): continue
-                                                
-                                            if cfg.get_secret_mode():
-                                                ma_5day = float(await asyncio.to_thread(broker.get_5day_ma, t) or 0.0)
-                                                temp_plan = strategy.get_plan(t, curr_p, avg_price, qty, prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash[t], is_simulation=True, vwap_status=vwap_status)
-                                                sniper_budget = float(temp_plan.get('one_portion') or 0.0)
-                                                
-                                                exec_price = min(c_close, tracking_info['armed_price'])
-                                                
-                                                if sniper_budget >= exec_price and exec_price > 0:
-                                                    cancel_buy_prices = [o['price'] for o in temp_plan.get('core_orders', []) if o['side'] == 'BUY']
-                                                    if cancel_buy_prices: await asyncio.to_thread(broker.cancel_orders_by_price, t, "BUY", list(set(cancel_buy_prices)))
-                                                    await asyncio.sleep(1.0)
-                                                    
-                                                    is_rev = temp_plan.get('is_reverse', False)
-                                                    if not is_rev and exec_price > avg_price: sniper_budget = sniper_budget * 0.5
-                                                        
-                                                    rem_qty = math.floor(sniper_budget / exec_price)
-                                                    hunt_success = False
-                                                    
-                                                    for attempt in range(3):
-                                                        if rem_qty <= 0: hunt_success = True; break
-                                                        ask_price = float(await asyncio.to_thread(broker.get_ask_price, t) or 0.0)
-                                                        safe_ask_price = ask_price if ask_price > 0 else c_close
-                                                        final_exec_price = min(safe_ask_price, tracking_info['armed_price'])
-                                                        
-                                                        res = broker.send_order(t, "BUY", rem_qty, final_exec_price, "LIMIT")
-                                                        if res.get('rt_cd') == '0':
-                                                            rem_qty = 0
-                                                            hunt_success = True
-                                                            break
-                                                        await asyncio.sleep(0.5)
-                                                    
-                                                    if hunt_success:
-                                                        cfg.set_lock(t, "SNIPER_BUY") 
-                                                        tracking_info['is_tracking'] = False
-                                                        await context.bot.send_message(chat_id=chat_id, text=f"💥 <b>[{t}] 하방(매수) 스나이퍼 명중!</b>", parse_mode='HTML')
-                                                        continue
+                is_glitch = False
+                if not is_regular_session:
+                    if df_1min is not None and not df_1min.empty:
+                        recent_vol = df_1min['volume'].tail(2).sum()
+                        if recent_vol < 5:
+                            is_glitch = True
+                    else:
+                        is_glitch = True
 
                 if target_pct_val := cfg.get_target_profit(t):
                     target_price = math.ceil(avg_price * (1 + target_pct_val / 100.0) * 100) / 100.0
@@ -248,27 +148,28 @@ async def scheduled_sniper_monitor(context):
                     star_price = math.ceil(avg_price * (1 + star_ratio) * 100) / 100.0
                     
                     if not lock_sell and curr_p >= target_price:
-                        await asyncio.to_thread(broker.cancel_all_orders_safe, t, side="SELL")
-                        await asyncio.sleep(1.0)
-                        
-                        rem_qty = qty
-                        hunt_success = False
-                        
-                        for attempt in range(3):
-                            if rem_qty <= 0: hunt_success = True; break
-                            bid_price = float(await asyncio.to_thread(broker.get_bid_price, t) or 0.0)
-                            if bid_price > 0 and bid_price >= target_price:
-                                res = broker.send_order(t, "SELL", rem_qty, bid_price, "LIMIT")
-                                if res.get('rt_cd') == '0':
-                                    rem_qty = 0
-                                    hunt_success = True
-                                    break
-                            await asyncio.sleep(0.5)
+                        if not is_glitch:
+                            await asyncio.to_thread(broker.cancel_all_orders_safe, t, side="SELL")
+                            await asyncio.sleep(1.0)
                             
-                        if hunt_success:
-                            cfg.set_lock(t, "SNIPER_SELL")
-                            await context.bot.send_message(chat_id=chat_id, text=f"🎉 <b>[{t}] 12% 잭팟 강제 익절 명중!</b>", parse_mode='HTML')
-                            continue
+                            rem_qty = qty
+                            hunt_success = False
+                            
+                            for attempt in range(3):
+                                if rem_qty <= 0: hunt_success = True; break
+                                bid_price = float(await asyncio.to_thread(broker.get_bid_price, t) or 0.0)
+                                if bid_price > 0 and bid_price >= target_price:
+                                    res = broker.send_order(t, "SELL", rem_qty, bid_price, "LIMIT")
+                                    if res.get('rt_cd') == '0':
+                                        rem_qty = 0
+                                        hunt_success = True
+                                        break
+                                await asyncio.sleep(0.5)
+                                
+                            if hunt_success:
+                                cfg.set_lock(t, "SNIPER_SELL")
+                                await context.bot.send_message(chat_id=chat_id, text=f"🎉 <b>[{t}] 12% 잭팟 강제 익절 명중!</b>", parse_mode='HTML')
+                                continue
                 
                 is_rev = cfg.get_reverse_state(t).get("is_active", False)
                 sell_divisor = 10 if split <= 20 else 20
@@ -283,12 +184,13 @@ async def scheduled_sniper_monitor(context):
                     base_trigger = max(star_price, safe_floor_price)
                 
                 if not lock_sell and curr_p >= base_trigger:
-                    if not tracking_info['trailing_armed']:
-                        tracking_info['trailing_armed'] = True
-                        tracking_info['is_trailing'] = True
-                        tracking_info['peak_price'] = curr_p
-                        tracking_info['trigger_price'] = base_trigger
-                        await context.bot.send_message(chat_id=chat_id, text=f"🦇 <b>[{t}] 상방 트레일링 스나이퍼 락온!</b>", parse_mode='HTML')
+                    if not is_glitch:
+                        if not tracking_info['trailing_armed']:
+                            tracking_info['trailing_armed'] = True
+                            tracking_info['is_trailing'] = True
+                            tracking_info['peak_price'] = curr_p
+                            tracking_info['trigger_price'] = base_trigger
+                            await context.bot.send_message(chat_id=chat_id, text=f"🦇 <b>[{t}] 상방 트레일링 스나이퍼 락온!</b>", parse_mode='HTML')
                 
                 if not lock_sell and tracking_info['trailing_armed']:
                     if curr_p > tracking_info['peak_price']:
@@ -337,7 +239,7 @@ async def scheduled_sniper_monitor(context):
     except Exception as e: logging.error(f"🚨 스나이퍼 에러: {e}")
 
 # ==========================================================
-# 2. 🛡️ Fail-Safe: 선제적 LOC 취소 & VWAP 초기화 (15:30 EST)
+# 2. 🛡️ Fail-Safe: 선제적 LOC 취소 & V-REV 타임 슬라이싱 전환 (15:30 EST)
 # ==========================================================
 async def scheduled_vwap_init_and_cancel(context):
     if not is_market_open(): return
@@ -374,18 +276,19 @@ async def scheduled_vwap_init_and_cancel(context):
     try:
         await asyncio.wait_for(_do_init(), timeout=45.0)
     except Exception as e:
-        logging.error(f"🚨 VWAP Fail-Safe 초기화 에러: {e}")
+        logging.error(f"🚨 Fail-Safe 초기화 에러: {e}")
 # ==========================================================
 # [scheduler_trade.py] (2부 / 2부)
-# 💡 [V24.09 패치] 후반부 로직 통신 결측치(None) Safe Casting 전면 이식 완료
+# 💡 [V24.15 대수술] 후반부 스케줄러 최적화 및 V_VWAP 종속성 100% 탈피
 # ==========================================================
 
 # ==========================================================
-# 3. ⏱️ 1분봉 정밀 타격 (VWAP 슬라이싱)
+# 3. ⏱️ 1분봉 정밀 타격 (V-REV 전용 타임 슬라이싱)
 # ==========================================================
 async def scheduled_vwap_trade(context):
     if not is_market_open(): return
     
+    # 💡 [핵심 수술] 엄격한 EST 타임존 락온
     est = pytz.timezone('US/Eastern')
     now_est = datetime.datetime.now(est)
     
@@ -393,7 +296,8 @@ async def scheduled_vwap_trade(context):
         return
         
     app_data = context.job.data
-    cfg, broker, vwap_strategy, strategy, tx_lock = app_data['cfg'], app_data['broker'], app_data['vwap_strategy'], app_data['strategy'], app_data['tx_lock']
+    # 💡 [다이어트 완료] vwap_strategy 의존성 100% 적출
+    cfg, broker, strategy, tx_lock = app_data['cfg'], app_data['broker'], app_data['strategy'], app_data['tx_lock']
     chat_id = context.job.chat_id
     
     vwap_cache = app_data.setdefault('vwap_cache', {})
@@ -420,7 +324,7 @@ async def scheduled_vwap_trade(context):
 
             for t in cfg.get_active_tickers():
                 # ----------------------------------------------------------
-                # 🟢 [1] V-REV 하이브리드 엔진 로직 (VWAP 슬라이싱)
+                # 🟢 V-REV 하이브리드 엔진 로직 (VWAP 슬라이싱 단독 가동)
                 # ----------------------------------------------------------
                 if cfg.get_version(t) == "V_REV":
                     if not vwap_cache.get(f"REV_{t}_nuked"):
@@ -600,198 +504,7 @@ async def scheduled_vwap_trade(context):
                                     
                             await asyncio.sleep(0.2)
 
-                # ----------------------------------------------------------
-                # 🔵 [2] 기존 오리지널 V_VWAP 자율주행 엔진 로직 (원상 복구 완벽 보존)
-                # ----------------------------------------------------------
-                elif cfg.get_version(t) == "V_VWAP": 
-                    is_rev = cfg.get_reverse_state(t).get("is_active", False)
-                    if is_rev: continue
-                        
-                    h = holdings.get(t) or {}
-                    actual_qty = int(float(h.get('qty') or 0))
-                    
-                    # 💡 [핵심 수술] Safe Casting
-                    prev_c_for_fix = float(await asyncio.to_thread(broker.get_previous_close, t) or 0.0)
-                    actual_avg = (prev_c_for_fix * 1.15) if actual_qty == 0 else float(h.get('avg') or 0.0)
-                    
-                    curr_p = float(await asyncio.to_thread(broker.get_current_price, t) or 0.0)
-                    prev_c = float(await asyncio.to_thread(broker.get_previous_close, t) or 0.0)
-                    ma_5day = float(await asyncio.to_thread(broker.get_5day_ma, t) or 0.0)
-                    if curr_p <= 0: continue
-                    
-                    try:
-                        df_1min = await asyncio.to_thread(broker.get_1min_candles_df, t)
-                        vwap_status = strategy.analyze_vwap_dominance(df_1min)
-                    except Exception:
-                        vwap_status = {"vwap_price": 0.0, "is_strong_up": False, "is_strong_down": False}
-                    
-                    plan = strategy.get_plan(
-                        t, curr_p, actual_avg, actual_qty, prev_c, ma_5day=ma_5day,
-                        market_type="REG", available_cash=allocated_cash.get(t, 0.0), is_simulation=True
-                    )
-                    
-                    if f"{t}_plan_locked" not in vwap_cache:
-                        target_star_buy_budget = 0.0
-                        target_avg_buy_budget = 0.0
-                        target_sell_qty = 0
-                        jackpot_orders = []
-                        
-                        for o in plan.get('core_orders', []):
-                            if o['side'] == 'BUY':
-                                if '별값' in o['desc'] or '수혈' in o['desc'] or '잔금' in o['desc']:
-                                    target_star_buy_budget += (o['qty'] * o['price'])
-                                else:
-                                    target_avg_buy_budget += (o['qty'] * o['price'])
-                            elif o['side'] == 'SELL':
-                                if o['type'] == 'LOC': 
-                                    target_sell_qty += o['qty']
-                                elif o['type'] == 'LIMIT':
-                                    jackpot_orders.append(o)
-                                    
-                        vwap_cache[f"{t}_star_price"] = float(plan.get('star_price', 0.0))
-                        vwap_cache[f"{t}_actual_avg"] = actual_avg
-                        vwap_cache[f"{t}_target_star_buy_budget"] = target_star_buy_budget
-                        vwap_cache[f"{t}_target_avg_buy_budget"] = target_avg_buy_budget
-                        vwap_cache[f"{t}_target_sell_qty"] = target_sell_qty
-                        vwap_cache[f"{t}_jackpot_orders"] = jackpot_orders
-                        vwap_cache[f"{t}_plan_locked"] = True
-                    
-                    star_price = vwap_cache[f"{t}_star_price"]
-                    actual_avg = vwap_cache[f"{t}_actual_avg"]
-                    target_star_buy_budget = vwap_cache[f"{t}_target_star_buy_budget"]
-                    target_avg_buy_budget = vwap_cache[f"{t}_target_avg_buy_budget"]
-                    target_sell_qty = vwap_cache[f"{t}_target_sell_qty"]
-                    
-                    if not vwap_cache.get(f"{t}_cancelled"):
-                        await context.bot.send_message(
-                            chat_id=chat_id, 
-                            text=f"🚨 <b>[{t}] VWAP 락온: 호가창 전면 초토화 (15:30 EST)</b>\n"
-                                 f"▫️ 묶여있던 예수금과 주식을 100% 해방시키기 위해 줍줍을 포함한 모든 주문을 일괄 소각(Nuke)합니다.\n"
-                                 f"▫️ 급등 방어용 12% 잭팟(지정가 매도)만 단독 재장전 후 VWAP 타격을 개시합니다.", 
-                            parse_mode='HTML', disable_notification=True
-                        )
-                        
-                        try:
-                            await asyncio.to_thread(broker.cancel_all_orders_safe, t, "BUY")
-                            await asyncio.to_thread(broker.cancel_all_orders_safe, t, "SELL")
-                            
-                            for o in vwap_cache.get(f"{t}_jackpot_orders", []):
-                                broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
-                                await asyncio.sleep(0.2)
-                                    
-                            vwap_cache[f"{t}_cancelled"] = True
-                            await asyncio.sleep(5.0) 
-                        except Exception as e:
-                            err_msg = f"🛑 <b>[FATAL ERROR] {t} V_VWAP 기존 덫 취소 실패!</b>\n▫️ 2중 예산 소진 방어를 위해 금일 타임 슬라이싱을 영구 차단(Hard-Lock)합니다.\n▫️ 상세 오류: {e}"
-                            await context.bot.send_message(chat_id=chat_id, text=err_msg, parse_mode='HTML')
-                            continue
-                    
-                    if vwap_status.get('is_strong_up', False) and not vwap_cache.get(f"{t}_hold_alerted"):
-                        vwap_cache[f"{t}_hold_alerted"] = True
-                        msg = f"🛡️ <b>[{t}] VWAP 매수 보류 (Strong Up 필터 가동)</b>\n"
-                        msg += f"거래량 지배력이 당일 평균가 위에 집중된 강력한 상승 추세장입니다.\n"
-                        msg += f"FOMO(고점 불타기) 방지를 위해 남은 VWAP 매수 예산 집행을 전면 보류(Hold)하며, 하단 종가(LOC) 방어선만 온전히 유지합니다."
-                        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML', disable_notification=True)
-
-                    rem_star_budget = max(0.0, target_star_buy_budget - vwap_cache.get(f"{t}_star_buy_executed", 0.0))
-                    rem_avg_budget = max(0.0, target_avg_buy_budget - vwap_cache.get(f"{t}_avg_buy_executed", 0.0))
-                    
-                    buy_qty = 0
-                    if curr_p <= star_price and rem_star_budget > 0:
-                        p1 = vwap_strategy.get_vwap_plan(t, curr_p, rem_star_budget, side="BUY", vwap_status=vwap_status)
-                        if p1['orders']: buy_qty += p1['orders'][0]['qty']
-                        
-                    if curr_p <= star_price and rem_avg_budget > 0: 
-                        p2 = vwap_strategy.get_vwap_plan(t, curr_p, rem_avg_budget, side="BUY", vwap_status=vwap_status)
-                        if p2['orders']: buy_qty += p2['orders'][0]['qty']
-                        
-                    if buy_qty > 0:
-                        ask_price = float(await asyncio.to_thread(broker.get_ask_price, t) or 0.0)
-                        exec_price = ask_price if ask_price > 0 else curr_p
-                        
-                        valid_buy_qty = 0
-                        if exec_price <= star_price and rem_star_budget > 0:
-                            p1 = vwap_strategy.get_vwap_plan(t, exec_price, rem_star_budget, side="BUY", vwap_status=vwap_status)
-                            if p1['orders']: valid_buy_qty += p1['orders'][0]['qty']
-                            
-                        if exec_price <= star_price and rem_avg_budget > 0: 
-                            p2 = vwap_strategy.get_vwap_plan(t, exec_price, rem_avg_budget, side="BUY", vwap_status=vwap_status)
-                            if p2['orders']: valid_buy_qty += p2['orders'][0]['qty']
-                            
-                        if valid_buy_qty > 0:
-                            res = broker.send_order(t, "BUY", valid_buy_qty, exec_price, "LIMIT")
-                            odno = res.get('odno', '')
-                            
-                            if res.get('rt_cd') == '0' and odno:
-                                ccld_qty = 0
-                                for _ in range(4):
-                                    await asyncio.sleep(2.0)
-                                    unfilled_check = await asyncio.to_thread(broker.get_unfilled_orders_detail, t)
-                                    my_order = next((ox for ox in unfilled_check if ox.get('odno') == odno), None)
-                                    if my_order:
-                                        ccld_qty = int(float(my_order.get('tot_ccld_qty') or 0))
-                                        break
-                                        
-                                    execs = await asyncio.to_thread(broker.get_execution_history, t, today_str, today_str)
-                                    my_execs = [ex for ex in execs if ex.get('odno') == odno]
-                                    if my_execs:
-                                        ccld_qty = sum(int(float(ex.get('ft_ccld_qty') or 0)) for ex in my_execs)
-                                        if ccld_qty >= valid_buy_qty:
-                                            break
-                                            
-                                if ccld_qty < valid_buy_qty:
-                                    await asyncio.to_thread(broker.cancel_order, t, odno)
-                                    await asyncio.sleep(1.0)
-                                    
-                                if ccld_qty > 0:
-                                    spent = ccld_qty * exec_price
-                                    s_active = rem_star_budget if exec_price <= star_price else 0.0
-                                    a_active = rem_avg_budget if exec_price <= star_price else 0.0 
-                                    tot_act = s_active + a_active
-                                    if tot_act > 0:
-                                        vwap_cache[f"{t}_star_buy_executed"] = vwap_cache.get(f"{t}_star_buy_executed", 0.0) + spent * (s_active / tot_act)
-                                        vwap_cache[f"{t}_avg_buy_executed"] = vwap_cache.get(f"{t}_avg_buy_executed", 0.0) + spent * (a_active / tot_act)
-                            await asyncio.sleep(0.2)
-                                
-                    executed_sell_qty = vwap_cache.get(f"{t}_sell_executed", 0)
-                    remaining_sell_qty = max(0, target_sell_qty - executed_sell_qty)
-                    
-                    if remaining_sell_qty > 0 and curr_p >= star_price:
-                        vwap_sell_plan = vwap_strategy.get_vwap_plan(t, curr_p, remaining_sell_qty, side="SELL", vwap_status=vwap_status)
-                        
-                        if vwap_sell_plan['orders']:
-                            for o in vwap_sell_plan['orders']:
-                                bid_price = float(await asyncio.to_thread(broker.get_bid_price, t) or 0.0)
-                                exec_price = bid_price if bid_price > 0 else o['price']
-                                
-                                if exec_price >= star_price: 
-                                    res = broker.send_order(t, o['side'], o['qty'], exec_price, o['type'])
-                                    odno = res.get('odno', '')
-                                    
-                                    if res.get('rt_cd') == '0' and odno:
-                                        ccld_qty = 0
-                                        for _ in range(4):
-                                            await asyncio.sleep(2.0)
-                                            unfilled_check = await asyncio.to_thread(broker.get_unfilled_orders_detail, t)
-                                            my_order = next((ox for ox in unfilled_check if ox.get('odno') == odno), None)
-                                            if my_order:
-                                                ccld_qty = int(float(my_order.get('tot_ccld_qty') or 0))
-                                                break
-                                                
-                                            execs = await asyncio.to_thread(broker.get_execution_history, t, today_str, today_str)
-                                            my_execs = [ex for ex in execs if ex.get('odno') == odno]
-                                            if my_execs:
-                                                ccld_qty = sum(int(float(ex.get('ft_ccld_qty') or 0)) for ex in my_execs)
-                                                if ccld_qty >= o['qty']:
-                                                    break
-                                                    
-                                        if ccld_qty < o['qty']:
-                                            await asyncio.to_thread(broker.cancel_order, t, odno)
-                                            await asyncio.sleep(1.0)
-                                            
-                                        if ccld_qty > 0:
-                                            vwap_cache[f"{t}_sell_executed"] = vwap_cache.get(f"{t}_sell_executed", 0) + ccld_qty
-                                    await asyncio.sleep(0.2)
+                # 💡 [다이어트 완료] 방대한 V_VWAP 전용 블록 100% 소각 완료
                         
     try:
         await asyncio.wait_for(_do_vwap(), timeout=45.0)
@@ -850,7 +563,7 @@ async def scheduled_emergency_liquidation(context):
         logging.error(f"🚨 긴급 수혈 에러: {e}")
 
 # ==========================================================
-# 5. 🌅 정규장 오픈 (17:05) V-REV 선제적 LOC (Fail-Safe) 장전
+# 5. 🌅 정규장 오픈 (17:05) 전송 (기존 V17 찌꺼기 100% 소각)
 # ==========================================================
 async def scheduled_regular_trade(context):
     kst = pytz.timezone('Asia/Seoul')
@@ -877,7 +590,7 @@ async def scheduled_regular_trade(context):
     await context.bot.send_message(
         chat_id=chat_id, 
         text=f"🌃 <b>[{target_hour}:05] 통합 주문 장전!</b>\n"
-             f"🛡️ 서버 접속 부하 방지를 위해 <b>{jitter_seconds}초</b> 대기 후 안전하게 주문을 전송합니다.", 
+             f"🛡️ 서버 접속 부하 방지를 위해 <b>{jitter_seconds}초</b> 대기 후 안전하게 주문 전송을 시도합니다.", 
         parse_mode='HTML'
     )
 
@@ -935,12 +648,14 @@ async def scheduled_regular_trade(context):
                 safe_avg = float(h.get('avg') or 0.0)
                 safe_qty = int(float(h.get('qty') or 0))
                 
+                # 💡 중앙 라우터 플러그인(V14) 호출
                 plan = strategy.get_plan(t, curr_p, safe_avg, safe_qty, prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash.get(t, 0.0))
                 plans[t] = plan
                 
                 if plan.get('core_orders', []) or plan.get('orders', []):
                     is_rev = plan.get('is_reverse', False)
-                    ver_txt = "VWAP 장전" if cfg.get_version(t) == "V_VWAP" else "정규장 주문"
+                    # 💡 [다이어트 완료] VWAP 출력 텍스트 원천 삭제
+                    ver_txt = "정규장 주문"
                     msgs[t] += f"🔄 <b>[{t}] 리버스 주문 실행</b>\n" if is_rev else f"💎 <b>[{t}] {ver_txt} 실행</b>\n"
 
             for t in v_rev_tickers:
@@ -951,6 +666,7 @@ async def scheduled_regular_trade(context):
 
             for t in sorted_tickers:
                 if t not in plans: continue
+                # 💡 [다이어트 완료] 라우터가 계산한 오리지널 오더를 그대로 전송
                 target_orders = plans[t].get('core_orders', plans[t].get('orders', []))
                 if not target_orders: continue
                 

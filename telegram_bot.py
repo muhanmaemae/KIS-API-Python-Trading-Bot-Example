@@ -3,7 +3,7 @@
 # ⚠️ 수술 내역: 
 # 1. /reset 시 삼위일체(본장부, 에스크로, 백업장부, 큐장부) 100% 소각 엔진 탑재
 # 2. 0주 도달 시 마이너스 수익이라도 장부를 비우는(강제 손절 리셋) 로직 개방
-# 💡 [핵심 수술] __init__ 확장을 통한 V-REV 및 VWAP 의존성 주입(DI) 연결 완비
+# 💡 [V24.15 대수술] vwap_strategy 의존성 100% 적출 및 2대 코어 최적화
 # ==========================================================
 import logging
 import datetime
@@ -19,8 +19,8 @@ from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler, Mes
 from telegram_view import TelegramView 
 
 class TelegramController:
-    # 💡 [핵심 수술] main.py로부터 신규 엔진(vwap_strategy, queue_ledger, strategy_rev)을 주입받도록 파라미터 확장
-    def __init__(self, config, broker, strategy, tx_lock=None, vwap_strategy=None, queue_ledger=None, strategy_rev=None):
+    # 💡 [핵심 수술] vwap_strategy 의존성 및 변수 100% 적출 완료
+    def __init__(self, config, broker, strategy, tx_lock=None, queue_ledger=None, strategy_rev=None):
         self.cfg = config
         self.broker = broker
         self.strategy = strategy
@@ -30,8 +30,6 @@ class TelegramController:
         self.sync_locks = {} 
         self.tx_lock = tx_lock or asyncio.Lock()
         
-        # 💡 [핵심 수술] 주입받은 의존성 객체를 컨트롤러 메모리에 완벽히 바인딩
-        self.vwap_strategy = vwap_strategy
         self.queue_ledger = queue_ledger
         self.strategy_rev = strategy_rev 
 
@@ -93,8 +91,6 @@ class TelegramController:
 
     def setup_handlers(self, application):
         application.add_handler(CommandHandler("start", self.cmd_start))
-        application.add_handler(CommandHandler("v17", self.cmd_v17))
-        application.add_handler(CommandHandler("v4", self.cmd_v4))
         application.add_handler(CommandHandler("sync", self.cmd_sync))
         application.add_handler(CommandHandler("record", self.cmd_record))
         application.add_handler(CommandHandler("history", self.cmd_history))
@@ -248,32 +244,6 @@ class TelegramController:
         latest_version = self.cfg.get_latest_version() 
         msg = self.view.get_start_message(target_hour, season_icon, latest_version) 
         await update.message.reply_text(msg, parse_mode='HTML')
-
-    async def cmd_v17(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._is_admin(update): return
-        if os.getenv("SECRET_MODE") != "ON": return 
-
-        args = context.args
-        if not args:
-            await update.message.reply_text("⚠️ 종목명을 함께 입력하세요. 예) /v17 TQQQ")
-            return
-            
-        ticker = args[0].upper()
-        active_tickers = self.cfg.get_active_tickers()
-        
-        if ticker in active_tickers:
-            self.cfg.set_version(ticker, "V17")
-            await update.message.reply_text(f"🦇 쉿! <b>[{ticker}] 나만의 시크릿 V17 모드(스나이퍼 어쌔신)</b>가 은밀하게 활성화되었습니다.", parse_mode='HTML')
-        else:
-            await update.message.reply_text(f"❌ 현재 운용 중인 종목이 아닙니다. (운용 중: {', '.join(active_tickers)})")
-
-    async def cmd_v4(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._is_admin(update): return
-        if os.getenv("SECRET_MODE") != "ON": return 
-
-        for t in self.cfg.get_active_tickers():
-            self.cfg.set_version(t, "V14")
-        await update.message.reply_text("✅ <b>모든 종목이 오리지널 V4(무매4) 모드로 복귀했습니다.</b>", parse_mode='HTML')
     async def cmd_sync(self, update, context):
         if not self._is_admin(update): return
         await update.message.reply_text("🔄 시장 분석 및 지시서 작성 중...")
@@ -349,15 +319,7 @@ class TelegramController:
                 
                 t_val = plan.get('t_val', 0.0)
                 is_rev = plan.get('is_reverse', False)
-                secret_quarter_target = 0.0
                 
-                if ver == "V17" and actual_qty > 0:
-                    if is_rev:
-                        secret_quarter_target = plan.get('star_price', 0.0)
-                    else:
-                        is_first_half = t_val < (split / 2)
-                        secret_quarter_target = plan.get('star_price', 0.0) if is_first_half else math.ceil(actual_avg * 1.005 * 100) / 100.0
-
                 if dynamic_pct_obj and hasattr(dynamic_pct_obj, 'metric_val'):
                     real_val = float(dynamic_pct_obj.metric_val)
                     real_name = dynamic_pct_obj.metric_name
@@ -426,7 +388,7 @@ class TelegramController:
                     'hybrid_target': hybrid_target_price,
                     'trigger_reason': trigger_reason,
                     'sniper_trigger': abs(float(dynamic_pct)), 
-                    'secret_quarter_target': secret_quarter_target,
+                    'secret_quarter_target': 0.0, 
                     'day_high': day_high,
                     'day_low': day_low,
                     'prev_close': safe_prev_close,
@@ -735,19 +697,7 @@ class TelegramController:
 
     async def cmd_mode(self, update, context):
         if not self._is_admin(update): return
-        
         active_tickers = self.cfg.get_active_tickers()
-        is_all_v17 = all(self.cfg.get_version(t) == "V17" for t in active_tickers)
-        
-        if is_all_v17:
-            msg = (
-                "🦇 <b>[ V17 시크릿 네이티브 가동 중 ]</b>\n\n"
-                "현재 운용 중인 모든 종목이 <b>V17 시크릿 모드</b>로 설정되어 있습니다.\n"
-                "V17 아키텍처는 상방 및 하방 스나이퍼가 코어 엔진에 100% 내장되어 상시 자동 격발되므로, "
-                "별도의 스나이퍼 ON/OFF 제어가 필요하지 않습니다. 🎯"
-            )
-            await update.message.reply_text(msg, parse_mode='HTML')
-            return
 
         report = "📊 <b>[ 자율주행 변동성 마스터 지표 상세 분석 ]</b>\n\n"
         
@@ -785,8 +735,6 @@ class TelegramController:
             report += f"▫️ 당일 절대 지수({real_name}): {real_val:.2f}\n"
             report += f"▫️ 진단 : {status_icon} {diag_text}\n\n"
 
-        report += "⚠️ <b>[매도 엔진 충돌 경고]</b> 스나이퍼 수동 가동 시 VWAP 매도 엔진과 충돌합니다. 스나이퍼가 명중하여 KIS 원장에 체결 이력이 기록될 경우, 다중 매도 방지 락온 로직에 의해 당일 VWAP 매도 스케줄러는 즉각 가동 중단(Lock-down) 처리됩니다.\n\n"
-        
         report += "🎯 <b>[ 수동 상방 스나이퍼 독립 제어 ]</b>\n"
         keyboard = []
         for t in active_tickers:
@@ -852,23 +800,16 @@ class TelegramController:
                 is_sniper_active_time = True
 
         for t in active_tickers:
-            if self.cfg.get_version(t) == "V17":
-                atr_data[t] = await asyncio.to_thread(self.broker.get_atr_data, t)
-                idx_ticker = "SOXX" if t == "SOXL" else "QQQ"
-                dynamic_target_data[t] = await asyncio.to_thread(self.broker.get_dynamic_sniper_target, idx_ticker)
-                
-                if dynamic_target_data[t] is not None:
-                    dynamic_target_data[t].is_sniper_active_time = is_sniper_active_time
-            else:
-                atr_data[t] = (0.0, 0.0)
-                dynamic_target_data[t] = None
+            atr_data[t] = (0.0, 0.0)
+            dynamic_target_data[t] = None
                 
         msg, markup = self.view.get_settlement_message(active_tickers, self.cfg, atr_data, dynamic_target_data)
         
+        # 💡 [다이어트 완료] V_VWAP 전환 버튼 소각 및 2대 코어 전용 버튼 렌더링
         keyboard = list(markup.inline_keyboard) if markup else []
         for t in active_tickers:
             keyboard.append([InlineKeyboardButton(f"🔄 [{t}] V_REV (역추세 하이브리드) 전환", callback_data=f"SET_VER:V_REV:{t}")])
-            keyboard.append([InlineKeyboardButton(f"▶️ [{t}] V_VWAP (기존 자율주행) 복귀", callback_data=f"SET_VER:V_VWAP:{t}")])
+            keyboard.append([InlineKeyboardButton(f"▶️ [{t}] V14 (오리지널 무매) 전환", callback_data=f"SET_VER:V14:{t}")])
         
         new_markup = InlineKeyboardMarkup(keyboard)
         await status_msg.edit_text(msg, reply_markup=new_markup, parse_mode='HTML')
@@ -1092,11 +1033,9 @@ class TelegramController:
                 
                 is_rev = plan.get('is_reverse', False)
                 
-                if ver == "V17": ver_display = "V17 시크릿"
-                elif ver == "V_VWAP": ver_display = "VWAP 자율주행 (페일세이프 장전)"
-                elif ver == "V_REV": ver_display = "V_REV 역추세 하이브리드"
-                elif ver == "V14": ver_display = "무매4"
-                else: ver_display = "무매3"
+                # 💡 [다이어트 완료] V_VWAP 표기 적출
+                if ver == "V_REV": ver_display = "V_REV 역추세 하이브리드"
+                else: ver_display = "V14 무매4"
                 
                 title = f"🔄 <b>[{t}] {ver_display} 리버스 주문 수동 실행</b>\n" if is_rev else f"💎 <b>[{t}] 정규장 주문 수동 실행</b>\n"
                 msg = title
@@ -1138,11 +1077,9 @@ class TelegramController:
                     return
                 self.cfg.set_upward_sniper_mode(ticker, False)
             
-            if new_ver == "V13": new_ver_display = "무매3"
-            elif new_ver == "V14": new_ver_display = "무매4"
-            elif new_ver == "V_VWAP": new_ver_display = "VWAP 자율주행"
-            elif new_ver == "V_REV": new_ver_display = "V_REV 역추세 하이브리드"
-            else: new_ver_display = new_ver
+            # 💡 [다이어트 완료] V_VWAP 표기 적출
+            if new_ver == "V_REV": new_ver_display = "V_REV 역추세 하이브리드"
+            else: new_ver_display = "V14 무매4"
             
             self.cfg.set_version(ticker, new_ver)
             await query.edit_message_text(f"✅ <b>[{ticker}]</b> 퀀트 엔진이 <b>{new_ver_display}</b> 모드로 직접 전환되었습니다.\n/sync 명령어에서 변경된 지시서를 확인하세요.", parse_mode='HTML')
