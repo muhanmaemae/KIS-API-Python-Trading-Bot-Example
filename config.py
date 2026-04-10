@@ -2,6 +2,7 @@
 # [config.py] - Part 1
 # ⚠️ V_REV 도입에 따른 P매매 잔재 완벽 소각 버전
 # 💡 [V24.10 수술] 동적 에스크로 락다운 깃발(Flag) 제어 로직 추가
+# 💡 [V25.00 수술] AVWAP 하이브리드 전술 상태 저장(캐싱) 파일 경로 및 함수 이식
 # ==========================================================
 import json
 import os
@@ -36,8 +37,9 @@ class ConfigManager:
             "VERSION_CFG": "data/version_config.json",
             "REVERSE_CFG": "data/reverse_config.json",
             "SNIPER_MULTIPLIER_CFG": "data/sniper_multiplier.json",
-            "SPLIT_HISTORY": "data/split_history.json"
-            # 💡 [핵심 수술] P_TRADE_DATA 경로 영구 삭제 완료
+            "SPLIT_HISTORY": "data/split_history.json",
+            # 💡 [V25.00 핵심 수술] AVWAP 하이브리드 전용 로컬 상태 파일 신설
+            "AVWAP_HYBRID_CFG": "data/avwap_hybrid.json"
         }
         
         self.DEFAULT_SEED = {"SOXL": 6720.0, "TQQQ": 6720.0}
@@ -119,7 +121,6 @@ class ConfigManager:
         return self._load_json(self.FILES["LEDGER"], [])
 
     def get_escrow_cash(self, ticker):
-        # 💡 [핵심 수술] 장부를 역순 탐색하여 '연속된 최근의 리버스 기록'만으로 에스크로 잔금 동적 산출 (과거 얽힘 버그 및 제논의 역설 완벽 방어)
         ledger = self.get_ledger()
         escrow = 0.0
         for r in reversed(ledger):
@@ -134,7 +135,6 @@ class ConfigManager:
         return max(0.0, float(escrow))
 
     def set_escrow_cash(self, ticker, amount):
-        # 💡 [핵심 수술] 동적 산출로 변경되어 수동 덮어쓰기 로직 무효화 (데이터 무결성 방어)
         pass
 
     def add_escrow_cash(self, ticker, amount):
@@ -147,7 +147,6 @@ class ConfigManager:
             self._save_json(self.FILES["LOCKS"], locks)
 
     def get_total_locked_cash(self, exclude_ticker=None):
-        # 💡 [핵심 수술] 모든 활성 종목의 동적 에스크로 잔액을 실시간 합산
         total = 0.0
         try:
             tickers = self.get_active_tickers()
@@ -160,7 +159,6 @@ class ConfigManager:
             pass
         return total
 
-    # 💡 [V24.10 수술] KIS 증거금 차감 동기화를 위한 주문 잠금 깃발 제어 로직
     def get_order_locked(self, ticker):
         locks = self._load_json(self.FILES["LOCKS"], {})
         return locks.get(f"ORDER_LOCKED_{ticker}", False)
@@ -337,6 +335,7 @@ class ConfigManager:
 # ==========================================================
 # [config.py] - Part 2
 # ⚠️ P매매 소각 완료 및 신규 V_REV 호환 버전
+# 💡 [V25.00 핵심 수술] AVWAP 하이브리드 전술 영구 저장 모듈 이식 완료
 # ==========================================================
 
     def calculate_holdings(self, ticker, records=None):
@@ -624,6 +623,18 @@ class ConfigManager:
         d = self._load_json(self.FILES["UPWARD_SNIPER"], {})
         d[ticker] = bool(v)
         self._save_json(self.FILES["UPWARD_SNIPER"], d)
+
+    # ==========================================================
+    # 💡 [V25.00 핵심 수술] AVWAP 하이브리드 전술 저장/불러오기 모듈
+    # ==========================================================
+    def get_avwap_hybrid_mode(self, ticker):
+        d = self._load_json(self.FILES["AVWAP_HYBRID_CFG"], {})
+        return d.get(ticker, False)
+
+    def set_avwap_hybrid_mode(self, ticker, v):
+        d = self._load_json(self.FILES["AVWAP_HYBRID_CFG"], {})
+        d[ticker] = bool(v)
+        self._save_json(self.FILES["AVWAP_HYBRID_CFG"], d)
 
     def get_secret_mode(self):
         return self._load_file(self.FILES["SECRET_MODE"]) == 'True'
