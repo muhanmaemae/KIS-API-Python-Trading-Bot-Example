@@ -1,8 +1,9 @@
 # ==========================================================
-# [strategy_v_avwap.py] 
+# [strategy_v_avwap.py] - Part 1/2 부 (상반부)
 # 💡 V-REV 하이브리드 전용 차세대 AVWAP 스나이퍼 플러그인 (Dual-Referencing)
 # ⚠️ 초공격형 당일 청산 암살자 (V-REV 잉여 현금 100% 몰빵 & -3% 하드스탑)
 # ⚠️ 옵션 B 아키텍처: 기초자산(SOXX) 시그널 스캔 + 파생상품(SOXL) 미시구조 타격
+# 🚨 [PEP 8 포맷팅 패치] 미사용 변수(time_0930) 소각 (Ruff F841 교정 완료)
 # ==========================================================
 import logging
 import datetime
@@ -25,7 +26,6 @@ class VAvwapHybridPlugin:
         [Pre-Fetch] 야후 파이낸스를 통해 기초자산(SOXX)의 과거 20일 20MA 및 30분봉(09:30) 평균 거래량 추출
         매일 장 초반 단 1회만 호출되어 메모리에 캐싱됩니다.
         """
-        # MODIFIED: ticker 변수명을 기초자산 명확성을 위해 base_ticker로 변경
         try:
             tkr = yf.Ticker(base_ticker)
             # 1. 20MA 추출용 일봉 데이터
@@ -68,6 +68,13 @@ class VAvwapHybridPlugin:
         except Exception as e:
             logging.error(f"🚨 [V_AVWAP] YF 기초자산 매크로 컨텍스트 추출 실패 ({base_ticker}): {e}")
             return None
+# ==========================================================
+# [strategy_v_avwap.py] - Part 2/2 부 (하반부)
+# 💡 V-REV 하이브리드 전용 차세대 AVWAP 스나이퍼 플러그인 (Dual-Referencing)
+# ⚠️ 초공격형 당일 청산 암살자 (V-REV 잉여 현금 100% 몰빵 & -3% 하드스탑)
+# ⚠️ 옵션 B 아키텍처: 기초자산(SOXX) 시그널 스캔 + 파생상품(SOXL) 미시구조 타격
+# 🚨 [PEP 8 포맷팅 패치] 미사용 변수(time_0930) 소각 (Ruff F841 교정 완료)
+# ==========================================================
 
     # MODIFIED: 듀얼 레퍼런싱을 위해 base(SOXX)와 exec(SOXL) 파라미터로 이원화
     def get_decision(self, base_ticker, exec_ticker, base_curr_p, exec_curr_p, base_day_open, avwap_avg_price, avwap_qty, avwap_alloc_cash, context_data, df_1min_base, now_est):
@@ -78,7 +85,7 @@ class VAvwapHybridPlugin:
         curr_time = now_est.time()
         
         # 기본 시간 통제선
-        time_0930 = datetime.time(9, 30)
+        # MODIFIED: [PEP 8 교정] 미사용 변수 time_0930 영구 소각 완료
         time_1000 = datetime.time(10, 0)
         time_1400 = datetime.time(14, 0)
         time_1430 = datetime.time(14, 30)
@@ -169,4 +176,3 @@ class VAvwapHybridPlugin:
                     return {'action': 'WAIT', 'reason': '예산_부족_관망', 'vwap': base_vwap}
                     
         return {'action': 'WAIT', 'reason': '타점_대기중', 'vwap': base_vwap}
-

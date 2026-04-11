@@ -1,8 +1,9 @@
 # ==========================================================
-# [volatility_engine.py] - Part 1/2 부 (상반부)
+# [volatility_engine.py] - 🌟 100% 통합 완성본 🌟
 # ⚠️ V3.2 패치: 기초지수 1년 ATR 절대 진폭 고정 및 공포지수 방향타 스위치 엔진 탑재
 # 💡 [V24.09 패치] 야후 파이낸스 교착(Deadlock) 방어용 timeout=5 전면 이식 완료
 # 💡 [V24.11 패치] 클래스 래퍼(VolatilityEngine) 구조 도입 및 calculate_weight 공통 인터페이스 신설
+# 🚨 [PEP 8 포맷팅 패치] 미사용 변수(weight) 100% 소각 (Ruff F841 교정 완료)
 # ==========================================================
 import yfinance as yf
 import pandas as pd
@@ -89,11 +90,6 @@ def _calculate_1y_atr(ticker, cache_key, default_atr):
     except Exception as e:
         print(f"⚠️ [Engine] {ticker} ATR 연산 오류: {e}")
         return _load_cache(cache_key, default_atr)
-# ==========================================================
-# [volatility_engine.py] - Part 2/2 부 (하반부)
-# ⚠️ V3.2 패치: 기초지수 1년 ATR 절대 진폭 고정 및 공포지수 방향타 스위치 엔진 탑재
-# 💡 [V24.11 패치] 클래스 래퍼(VolatilityEngine) 구조 도입 및 calculate_weight 인터페이스 신설
-# ==========================================================
 
 def get_tqqq_target_drop():
     """ [ TQQQ 스나이퍼 ] 실시간 VXN과 QQQ 1년 ATR을 결합하여 타격선 계산 """
@@ -112,17 +108,15 @@ def get_tqqq_target_drop():
         if valid_closes_1y.empty:
             return round(-(1.65 * 3), 2)
             
-        current_vxn = float(valid_closes_1y.iloc[-1])
-        
+        # 미사용 변수(current_vxn)는 Ruff F841 교정을 위해 삭제 또는 필요 시점까지 보류
+        # 본 로직에서는 가중치를 사용하지 않으므로 모두 제거
         try:
             mean_vxn = float(valid_closes_1y.mean())
             if pd.isna(mean_vxn) or mean_vxn <= 0:
                 raise ValueError("Invalid Mean")
             _save_cache("VXN_MEAN", mean_vxn)
         except Exception:
-            mean_vxn = _load_cache("VXN_MEAN", 20.0)
-        
-        weight = current_vxn / mean_vxn
+            _load_cache("VXN_MEAN", 20.0)
         
         # 💡 [V3.2 패치] 1배수 기초지수 QQQ의 1년 ATR * 3배 동적 스케일링 (가중치 배제 절대 진폭 고정)
         qqq_1y_atr = _calculate_1y_atr("QQQ", "QQQ_ATR_1Y", 1.65)
@@ -156,17 +150,13 @@ def get_soxl_target_drop():
         if valid_hvs_1y.empty:
             return round(-(2.93 * 3), 2)
             
-        latest_hv = float(valid_hvs_1y.iloc[-1])
-        
         try:
             mean_hv = float(valid_hvs_1y.mean())
             if pd.isna(mean_hv) or mean_hv <= 0:
                 raise ValueError("Invalid Mean")
             _save_cache("SOXX_HV_MEAN", mean_hv)
         except Exception:
-            mean_hv = _load_cache("SOXX_HV_MEAN", 25.0)
-        
-        weight = latest_hv / mean_hv
+            _load_cache("SOXX_HV_MEAN", 25.0)
         
         # 💡 [V3.2 패치] 1배수 기초지수 SOXX의 1년 ATR * 3배 동적 스케일링 (가중치 배제 절대 진폭 고정)
         soxx_1y_atr = _calculate_1y_atr("SOXX", "SOXX_ATR_1Y", 2.93)
@@ -270,9 +260,6 @@ def get_soxl_target_drop_full():
         fallback_amp = round(-(2.93 * 3), 2)
         return 0.0, 1.0, fallback_amp, fallback_amp
 
-# ==========================================================
-# 💡 [V24.11 핵심 수술] main.py와 완벽한 통신을 위한 클래스 래퍼 신설
-# ==========================================================
 class VolatilityEngine:
     def __init__(self):
         pass
@@ -294,3 +281,4 @@ class VolatilityEngine:
         except Exception as e:
             print(f"⚠️ [VolatilityEngine] {ticker} 가중치 산출 래퍼 오류: {e}")
             return {'weight': 1.0}
+
