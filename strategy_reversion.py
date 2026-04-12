@@ -6,6 +6,7 @@
 # 💡 [V24.16 팩트 동기화] 하락장 방어 매수 Buy2 타점 (0.9725) 교정
 # 💡 [V24.16 팩트 동기화] 1층 전량 익절 타점 고유 매수가 기반(layer_price * 1.006) 원복
 # 🚨 [V25.13 디커플링 스왑 패치] UI와 동일하게 Buy1과 Buy2의 타점을 고가->저가 순으로 스왑 연동
+# 🚨 [V25.14 팩트 동기화] 1층 물귀신 덤핑 차단 및 지층별 평단가 완벽 분리 개별 탈출(Decoupling) 이식
 # ==========================================================
 import math
 
@@ -92,34 +93,36 @@ class ReversionStrategy:
                 if curr_p >= jackpot_trigger:
                     target_sell_qty = rem_qty 
                     target_p = round(jackpot_trigger, 2)
+                    orders.append({"side": "SELL", "qty": target_sell_qty, "price": target_p})
                 else:
-                    target_sell_qty = 0
-                    target_p = 0.0
-                    
+                    # MODIFIED: [V25.14 팩트 동기화] 1층과 상위 층(2~N층) 평단가 및 익절 타점 완벽 분리
                     dates_in_queue = sorted(list(set(item.get('date') for item in q_data if item.get('date'))), reverse=True)
                     
-                    for i, d in enumerate(dates_in_queue):
-                        if i >= 3: break 
-                        
-                        lots_for_date = [item for item in q_data if item.get('date') == d]
-                        grp_qty = sum(item.get('qty', 0) for item in lots_for_date)
-                        if grp_qty == 0: continue
-                        
-                        # 💡 [핵심 수술] 1층(i==0)은 고유 매수가(layer_price) 앵커 적용
-                        if i == 0:
-                            layer_price = sum(item.get('qty', 0) * item.get('price', 0.0) for item in lots_for_date) / grp_qty if grp_qty > 0 else prev_c
-                            trigger = round(layer_price * 1.006, 2)
-                        else:
-                            trigger = round(avg_price * 1.005, 2)
+                    layer_1_qty = 0
+                    layer_1_price = 0.0
+                    
+                    if dates_in_queue:
+                        lots_1 = [item for item in q_data if item.get('date') == dates_in_queue[0]]
+                        layer_1_qty = sum(item.get('qty', 0) for item in lots_1)
+                        if layer_1_qty > 0:
+                            layer_1_price = sum(item.get('qty', 0) * item.get('price', 0.0) for item in lots_1) / layer_1_qty
                             
-                        if target_p == 0.0 or trigger < target_p:
-                            target_p = trigger
-                            
-                        target_sell_qty += grp_qty
-
-                safe_sell_qty = min(target_sell_qty, rem_qty)
-                if safe_sell_qty > 0 and target_p > 0:
-                    orders.append({"side": "SELL", "qty": safe_sell_qty, "price": target_p})
+                    upper_qty = total_q - layer_1_qty
+                    total_inv = sum(item.get('qty', 0) * item.get('price', 0.0) for item in q_data)
+                    upper_inv = total_inv - (layer_1_qty * layer_1_price)
+                    upper_avg = upper_inv / upper_qty if upper_qty > 0 else 0.0
+                    
+                    trigger_1 = round(layer_1_price * 1.006, 2)
+                    trigger_upper = round(upper_avg * 1.005, 2) if upper_qty > 0 else 0.0
+                    
+                    available_l1 = min(layer_1_qty, rem_qty)
+                    available_upper = min(upper_qty, rem_qty - available_l1)
+                    
+                    if available_l1 > 0 and curr_p >= trigger_1:
+                        orders.append({"side": "SELL", "qty": available_l1, "price": trigger_1})
+                        
+                    if available_upper > 0 and trigger_upper > 0 and curr_p >= trigger_upper:
+                        orders.append({"side": "SELL", "qty": available_upper, "price": trigger_upper})
             
             return {"orders": orders, "trigger_loc": True}
 
@@ -153,50 +156,71 @@ class ReversionStrategy:
 
         else: # SELL
             if total_q > 0:
-                target_sell_qty = 0
                 jackpot_trigger = avg_price * 1.010
-                sell_price_target = round(prev_c * 1.006, 2)
                 
                 if curr_p >= jackpot_trigger:
                     target_sell_qty = total_q
                     sell_price_target = round(jackpot_trigger, 2)
+                    
+                    rem_qty_to_sell = max(0, target_sell_qty - self.executed["SELL_QTY"].get(ticker, 0))
+                    
+                    if rem_qty_to_sell > 0:
+                        exact_qs = (target_sell_qty * slice_ratio_sell) + self.residual["SELL"].get(ticker, 0.0)
+                        alloc_qs = math.floor(exact_qs)
+                        
+                        alloc_qs = min(alloc_qs, rem_qty_to_sell)
+                        self.residual["SELL"][ticker] = exact_qs - alloc_qs
+                        
+                        if alloc_qs > 0:
+                            orders.append({"side": "SELL", "qty": alloc_qs, "price": sell_price_target})
                 else:
+                    # MODIFIED: [V25.14 팩트 동기화] 1층과 상위 층(2~N층) 평단가 및 익절 타점 완벽 분리
                     dates_in_queue = sorted(list(set(item.get('date') for item in q_data if item.get('date'))), reverse=True)
                     
-                    target_p = 0.0
-                    for i, d in enumerate(dates_in_queue):
-                        if i >= 3: break 
-                        
-                        lots_for_date = [item for item in q_data if item.get('date') == d]
-                        grp_qty = sum(item.get('qty', 0) for item in lots_for_date)
-                        if grp_qty == 0: continue
-                        
-                        # 💡 [핵심 수술] 1층(i==0)은 고유 매수가(layer_price) 앵커 적용
-                        if i == 0:
-                            layer_price = sum(item.get('qty', 0) * item.get('price', 0.0) for item in lots_for_date) / grp_qty if grp_qty > 0 else prev_c
-                            trigger = round(layer_price * 1.006, 2)
-                        else:
-                            trigger = round(avg_price * 1.005, 2)
-                            
-                        target_sell_qty += grp_qty
-                        
-                        if target_p == 0.0 or trigger < target_p:
-                            target_p = trigger
-                            
-                    if target_p > 0.0:
-                        sell_price_target = target_p
-
-                rem_qty_to_sell = max(0, target_sell_qty - self.executed["SELL_QTY"].get(ticker, 0))
-                
-                if rem_qty_to_sell > 0:
-                    exact_qs = (target_sell_qty * slice_ratio_sell) + self.residual["SELL"].get(ticker, 0.0)
-                    alloc_qs = math.floor(exact_qs)
+                    layer_1_qty = 0
+                    layer_1_price = 0.0
                     
-                    alloc_qs = min(alloc_qs, rem_qty_to_sell)
-                    self.residual["SELL"][ticker] = exact_qs - alloc_qs
+                    if dates_in_queue:
+                        lots_1 = [item for item in q_data if item.get('date') == dates_in_queue[0]]
+                        layer_1_qty = sum(item.get('qty', 0) for item in lots_1)
+                        if layer_1_qty > 0:
+                            layer_1_price = sum(item.get('qty', 0) * item.get('price', 0.0) for item in lots_1) / layer_1_qty
+                            
+                    upper_qty = total_q - layer_1_qty
+                    total_inv = sum(item.get('qty', 0) * item.get('price', 0.0) for item in q_data)
+                    upper_inv = total_inv - (layer_1_qty * layer_1_price)
+                    upper_avg = upper_inv / upper_qty if upper_qty > 0 else 0.0
                     
-                    if alloc_qs > 0:
-                        orders.append({"side": "SELL", "qty": alloc_qs, "price": sell_price_target})
+                    trigger_1 = round(layer_1_price * 1.006, 2)
+                    trigger_upper = round(upper_avg * 1.005, 2) if upper_qty > 0 else 0.0
+                    
+                    target_sell_qty = 0
+                    sell_price_target = 0.0
+                    
+                    is_l1_hit = (layer_1_qty > 0 and curr_p >= trigger_1)
+                    is_upper_hit = (upper_qty > 0 and trigger_upper > 0 and curr_p >= trigger_upper)
+                    
+                    if is_l1_hit and is_upper_hit:
+                        target_sell_qty = layer_1_qty + upper_qty
+                        sell_price_target = min(trigger_1, trigger_upper)
+                    elif is_l1_hit:
+                        target_sell_qty = layer_1_qty
+                        sell_price_target = trigger_1
+                    elif is_upper_hit:
+                        target_sell_qty = upper_qty
+                        sell_price_target = trigger_upper
+                        
+                    rem_qty_to_sell = max(0, target_sell_qty - self.executed["SELL_QTY"].get(ticker, 0))
+                    
+                    if rem_qty_to_sell > 0:
+                        exact_qs = (target_sell_qty * slice_ratio_sell) + self.residual["SELL"].get(ticker, 0.0)
+                        alloc_qs = math.floor(exact_qs)
+                        
+                        alloc_qs = min(alloc_qs, rem_qty_to_sell)
+                        self.residual["SELL"][ticker] = exact_qs - alloc_qs
+                        
+                        if alloc_qs > 0:
+                            orders.append({"side": "SELL", "qty": alloc_qs, "price": sell_price_target})
 
         return {"orders": orders, "trigger_loc": False}
 
