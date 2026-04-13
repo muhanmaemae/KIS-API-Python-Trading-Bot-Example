@@ -1,10 +1,13 @@
 # ==========================================================
-# [broker.py] - 🌟 100% 통합 완성본 🌟
+# [broker.py] - Part 1/2 부 (상반부)
+# 🌟 100% 통합 완성본 🌟
 # ⚠️ 수술 내역: 야후 파이낸스(yfinance) 좀비 스레드 누적 방지
 # 모든 history() 호출에 timeout=5 파라미터 강제 주입 완료
 # 🚨 [V25.19 핫픽스] 토큰 만료 시간 타임존(Timezone) Naive/Aware 충돌 교정
 # 🚨 [V25.19 핫픽스] Windows 환경 임시 파일 권한(Permission) 락 충돌 방어 (shutil.move 도입)
 # 🚨 [V25.20 핫픽스] 잭팟 스윕 피니셔 디커플링 연산을 위한 ord_psbl_qty(순수 매도 가능 수량) 확장 이식
+# 🚨 [V25.23 디커플링] 범용 1분봉 스캔 엔진(get_1min_candles_df) 신설 탑재 (API 의존성 적출)
+# 🚨 [V25.25 핫픽스] 애프터마켓(AFTER_LIMIT) KIS 주문 코드 규격(00) 교정 (장마감 코드 34 충돌 방어)
 # ==========================================================
 
 import requests
@@ -16,7 +19,7 @@ import math
 import yfinance as yf
 import pytz
 import tempfile
-import shutil  # NEW: [V25.19 핫픽스] 파일 권한 충돌 방어용 라이브러리 추가
+import shutil  
 import pandas as pd   
 import numpy as np
 import volatility_engine as ve  
@@ -41,7 +44,6 @@ class KoreaInvestmentBroker:
                     saved = json.load(f)
                 expire_time = datetime.datetime.strptime(saved['expire'], '%Y-%m-%d %H:%M:%S')
                 
-                # MODIFIED: [V25.19 핫픽스] 타임존 충돌을 막기 위해 현재 시간을 Naive Datetime으로 교정
                 kst = pytz.timezone('Asia/Seoul')
                 now_kst_naive = datetime.datetime.now(kst).replace(tzinfo=None)
                 
@@ -73,7 +75,6 @@ class KoreaInvestmentBroker:
                     f.flush()
                     os.fsync(fd)
                 
-                # MODIFIED: [V25.19 핫픽스] Windows 환경에서 파일 핸들(fd) 권한 에러를 우회하는 shutil.move 이식
                 shutil.move(temp_path, self.token_file)
             else:
                 print(f"❌ [Broker] 토큰 발급 실패: {data.get('error_description', '알 수 없는 오류')}")
@@ -209,7 +210,6 @@ class KoreaInvestmentBroker:
                 for item in res_hold.get('output1', []):
                     ticker = item.get('ovrs_pdno')
                     qty = int(self._safe_float(item.get('ovrs_cblc_qty', 0)))
-                    # MODIFIED: [V25.20 핫픽스] 스윕 피니셔 디커플링 연산을 위해 '순수 매도 가능 잔량(ord_psbl_qty)' 추가 추출
                     ord_psbl_qty = int(self._safe_float(item.get('ord_psbl_qty', qty)))
                     avg = self._safe_float(item.get('pchs_avg_pric', 0))
                     if qty > 0 and ticker not in holdings: 
@@ -223,7 +223,6 @@ class KoreaInvestmentBroker:
     def get_current_5min_candle(self, ticker):
         try:
             stock = yf.Ticker(ticker)
-            # 💡 [수술] timeout=5 강제 주입
             df = stock.history(period="5d", interval="1m", prepost=True, timeout=5)
             
             if df.empty:
@@ -287,7 +286,6 @@ class KoreaInvestmentBroker:
         try:
             stock = yf.Ticker(ticker)
             if is_market_closed: return float(stock.fast_info['last_price'])
-            # 💡 [수술] timeout=5 강제 주입
             hist = stock.history(period="1d", interval="1m", prepost=True, timeout=5)
             if not hist.empty: return float(hist['Close'].iloc[-1])
             else: return float(stock.fast_info['last_price'])
@@ -303,6 +301,18 @@ class KoreaInvestmentBroker:
         except Exception as e:
             print(f"❌ [한투 API] 현재가 우회 조회 실패: {e}")
         return 0.0
+# ==========================================================
+# [broker.py] - Part 2/2 부 (하반부)
+# 🌟 100% 통합 완성본 🌟
+# ⚠️ 수술 내역: 야후 파이낸스(yfinance) 좀비 스레드 누적 방지
+# 모든 history() 호출에 timeout=5 파라미터 강제 주입 완료
+# 🚨 [V25.19 핫픽스] 토큰 만료 시간 타임존(Timezone) Naive/Aware 충돌 교정
+# 🚨 [V25.19 핫픽스] Windows 환경 임시 파일 권한(Permission) 락 충돌 방어 (shutil.move 도입)
+# 🚨 [V25.20 핫픽스] 잭팟 스윕 피니셔 디커플링 연산을 위한 ord_psbl_qty(순수 매도 가능 수량) 확장 이식
+# 🚨 [V25.23 디커플링] 범용 1분봉 스캔 엔진(get_1min_candles_df) 신설 탑재 (API 의존성 적출)
+# 🚨 [V25.25 핫픽스] 애프터마켓(AFTER_LIMIT) KIS 주문 코드 규격(00) 교정 (장마감 코드 34 충돌 방어)
+# ==========================================================
+
     def get_ask_price(self, ticker):
         try:
             excg_cd = self._get_exchange_code(ticker, target_api="PRICE")
@@ -336,7 +346,6 @@ class KoreaInvestmentBroker:
     def get_previous_close(self, ticker):
         try:
             stock = yf.Ticker(ticker)
-            # 💡 [수술] timeout=5 강제 주입
             hist = stock.history(period="5d", timeout=5)
             if not hist.empty:
                 est = pytz.timezone('US/Eastern')
@@ -370,7 +379,6 @@ class KoreaInvestmentBroker:
     def get_5day_ma(self, ticker):
         try:
             stock = yf.Ticker(ticker)
-            # 💡 [수술] timeout=5 강제 주입
             hist = stock.history(period="10d", timeout=5) 
             if len(hist) >= 5: return float(hist['Close'][-5:].mean())
         except Exception as e:
@@ -392,6 +400,38 @@ class KoreaInvestmentBroker:
             print(f"❌ [한투 API] MA5 우회 조회 실패: {e}")
             
         return 0.0
+
+    def get_1min_candles_df(self, ticker):
+        try:
+            stock = yf.Ticker(ticker)
+            df = stock.history(period="1d", interval="1m", prepost=True, timeout=5)
+            
+            if df.empty:
+                return None
+                
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.droplevel(1)
+                
+            est = pytz.timezone('US/Eastern')
+            if df.index.tz is None:
+                df.index = df.index.tz_localize('UTC').tz_convert(est)
+            else:
+                df.index = df.index.tz_convert(est)
+                
+            df = df.rename(columns={
+                'High': 'high',
+                'Low': 'low',
+                'Close': 'close',
+                'Volume': 'volume'
+            })
+            
+            df['time_est'] = df.index.strftime('%H%M00')
+            
+            return df[['high', 'low', 'close', 'volume', 'time_est']]
+            
+        except Exception as e:
+            print(f"⚠️ [Broker] 야후 파이낸스 범용 1분봉 파싱 에러 ({ticker}): {e}")
+            return None
 
     def get_unfilled_orders(self, ticker):
         excg_cd = self._get_exchange_code(ticker, target_api="ORDER")
@@ -497,6 +537,7 @@ class KoreaInvestmentBroker:
             
         return len(target_orders)
 
+    # MODIFIED: [V25.25 핫픽스] 애프터마켓 지정가 코드("00") 정규화 이식
     def send_order(self, ticker, side, qty, price, order_type="LIMIT"):
         tr_id = "TTTT1002U" if side == "BUY" else "TTTT1006U"
         excg_cd = self._get_exchange_code(ticker, target_api="ORDER")
@@ -505,7 +546,7 @@ class KoreaInvestmentBroker:
         elif order_type == "MOC": ord_dvsn = "33"
         elif order_type == "LOO": ord_dvsn = "02"
         elif order_type == "MOO": ord_dvsn = "31"
-        elif order_type == "AFTER_LIMIT": ord_dvsn = "34"  # 💡 [안전장치] 애프터마켓 지정가 지원
+        elif order_type == "AFTER_LIMIT": ord_dvsn = "00"  
         else: ord_dvsn = "00"
 
         final_price = self._ceil_2(price)
@@ -702,7 +743,6 @@ class KoreaInvestmentBroker:
     def get_day_high_low(self, ticker):
         try:
             stock = yf.Ticker(ticker)
-            # 💡 [수술] timeout=5 강제 주입
             hist = stock.history(period="1d", interval="1m", prepost=True, timeout=5)
             if not hist.empty:
                 day_high = float(hist['High'].max())
@@ -728,7 +768,6 @@ class KoreaInvestmentBroker:
     def get_atr_data(self, ticker):
         try:
             stock = yf.Ticker(ticker)
-            # 💡 [수술] timeout=5 강제 주입
             hist = stock.history(period="30d", timeout=5)
             
             if hist.empty or len(hist) < 15:

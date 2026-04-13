@@ -1,9 +1,10 @@
 # ==========================================================
-# [strategy_v_avwap.py] - Part 1/2 부 (상반부)
+# [strategy_v_avwap.py]
 # 💡 V-REV 하이브리드 전용 차세대 AVWAP 스나이퍼 플러그인 (Dual-Referencing)
 # ⚠️ 초공격형 당일 청산 암살자 (V-REV 잉여 현금 100% 몰빵 & -3% 하드스탑)
 # ⚠️ 옵션 B 아키텍처: 기초자산(SOXX) 시그널 스캔 + 파생상품(SOXL) 미시구조 타격
 # 🚨 [PEP 8 포맷팅 패치] 미사용 변수(time_0930) 소각 (Ruff F841 교정 완료)
+# 🚨 [V25.23 디커플링] KIS API 하드코딩 종속성 적출 및 범용 1분봉 컬럼 정규화 완비
 # ==========================================================
 import logging
 import datetime
@@ -68,13 +69,6 @@ class VAvwapHybridPlugin:
         except Exception as e:
             logging.error(f"🚨 [V_AVWAP] YF 기초자산 매크로 컨텍스트 추출 실패 ({base_ticker}): {e}")
             return None
-# ==========================================================
-# [strategy_v_avwap.py] - Part 2/2 부 (하반부)
-# 💡 V-REV 하이브리드 전용 차세대 AVWAP 스나이퍼 플러그인 (Dual-Referencing)
-# ⚠️ 초공격형 당일 청산 암살자 (V-REV 잉여 현금 100% 몰빵 & -3% 하드스탑)
-# ⚠️ 옵션 B 아키텍처: 기초자산(SOXX) 시그널 스캔 + 파생상품(SOXL) 미시구조 타격
-# 🚨 [PEP 8 포맷팅 패치] 미사용 변수(time_0930) 소각 (Ruff F841 교정 완료)
-# ==========================================================
 
     # MODIFIED: 듀얼 레퍼런싱을 위해 base(SOXX)와 exec(SOXL) 파라미터로 이원화
     def get_decision(self, base_ticker, exec_ticker, base_curr_p, exec_curr_p, base_day_open, avwap_avg_price, avwap_qty, avwap_alloc_cash, context_data, df_1min_base, now_est):
@@ -101,17 +95,17 @@ class VAvwapHybridPlugin:
         if df_1min_base is not None and not df_1min_base.empty:
             try:
                 df = df_1min_base.copy()
-                # KIS API 표준 컬럼명 추종 연산
-                df['tp'] = (df['stck_hgpr'].astype(float) + df['stck_lwpr'].astype(float) + df['stck_prpr'].astype(float)) / 3.0
-                df['vol'] = df['cntg_vol'].astype(float)
+                # MODIFIED: [V25.23 디커플링] 야후 파이낸스 범용 1분봉 데이터 컬럼 규격으로 정규화 (KIS 종속성 적출)
+                df['tp'] = (df['high'].astype(float) + df['low'].astype(float) + df['close'].astype(float)) / 3.0
+                df['vol'] = df['volume'].astype(float)
                 df['vol_tp'] = df['tp'] * df['vol']
                 
                 cum_vol = df['vol'].sum()
                 cum_vol_tp = df['vol_tp'].sum()
                 base_vwap = cum_vol_tp / cum_vol if cum_vol > 0 else base_curr_p
                 
-                # 09:30 ~ 10:00 (EST) 거래량 스캔 (KIS 'stck_cntg_hour' 필드 사용)
-                mask_30m = (df['stck_cntg_hour'] >= '093000') & (df['stck_cntg_hour'] < '100100')
+                # 09:30 ~ 10:00 (EST) 거래량 스캔 (정규화된 time_est 필드 사용)
+                mask_30m = (df['time_est'] >= '093000') & (df['time_est'] < '100100')
                 base_current_30m_vol = df.loc[mask_30m, 'vol'].sum()
             except Exception as e:
                 logging.debug(f"[V_AVWAP] 기초자산 1분봉 파싱 에러 (기본값 대체): {e}")
