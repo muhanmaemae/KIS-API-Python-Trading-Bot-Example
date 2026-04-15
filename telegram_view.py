@@ -68,7 +68,7 @@ class TelegramView:
         dst_state = "🌞서머타임 ON" if target_hour == 17 else "❄️서머타임 OFF"
         
         msg = f"🌌 [ 인피니트 스노우볼 {latest_version} ]\n"
-        msg += "💠 2대 퀀트 코어 + AVWAP 하이브리드\n\n"
+        msg += "💠 무결성 V-REV & 타임 슬라이싱\n\n"
         
         msg += f"🕒 [ 운영 스케줄 ({dst_state}) ]\n"
         msg += "🔹 6시간 간격 : 🔑 API 토큰 자동 갱신\n"
