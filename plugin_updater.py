@@ -15,9 +15,9 @@ class SystemUpdater:
     def __init__(self):
         self.remote_branch = "origin/main"
         
-        # 💡 [핵심 수술] .env 파일에서 사용자가 지정한 데몬 이름을 스캔, 없으면 'pipiosbot'으로 폴백
+        # 💡 [핵심 수술] .env 파일에서 사용자가 지정한 데몬 이름을 스캔, 없으면 'mybot'으로 폴백
         load_dotenv()
-        self.daemon_name = os.getenv("DAEMON_NAME", "pipiosbot")
+        self.daemon_name = os.getenv("DAEMON_NAME", "mybot")
 
     async def pull_latest_code(self):
         """
