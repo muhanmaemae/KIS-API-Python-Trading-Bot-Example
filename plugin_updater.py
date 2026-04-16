@@ -4,6 +4,7 @@
 # 💡 깃허브 원격 저장소 강제 동기화 (git fetch & reset --hard)
 # 💡 OS 레벨 데몬 재가동 제어 (sudo systemctl restart)
 # 🚨 [V27.00 핫픽스] 사용자별 데몬 이름(DAEMON_NAME) .env 동적 로드 이식 완료
+# 🛡️ [V27.05 추가] 업데이트 직전 stable_backup 폴더로 롤백용 안전띠 결속 기능 탑재
 # ==========================================================
 import logging
 import asyncio
@@ -19,11 +20,35 @@ class SystemUpdater:
         load_dotenv()
         self.daemon_name = os.getenv("DAEMON_NAME", "mybot")
 
+    async def _create_safety_backup(self):
+        """
+        [롤백 봇(Rescue) 전용 아키텍처]
+        업데이트를 시도한다는 것 = 현재 코드가 정상 작동 중이라는 뜻이므로,
+        새로운 코드를 받기 전에 현재 파이썬 파일들을 stable_backup 폴더에 피신시킵니다.
+        """
+        try:
+            backup_dir = "stable_backup"
+            os.makedirs(backup_dir, exist_ok=True)
+            
+            # 현재 폴더의 모든 .py 파일들을 stable_backup 폴더로 복사 (에러 무시)
+            proc = await asyncio.create_subprocess_shell(
+                f"cp -p *.py {backup_dir}/ 2>/dev/null || true",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            await proc.communicate()
+            logging.info("🛡️ [Updater] 롤백 봇을 위한 안전띠(stable_backup) 결속 완료")
+        except Exception as e:
+            logging.error(f"🚨 [Updater] 안전띠 결속 중 에러 발생 (업데이트는 계속 진행): {e}")
+
     async def pull_latest_code(self):
         """
         깃허브 서버와 통신하여 로컬의 변경 사항을 완벽히 무시하고
         원격 저장소의 최신 코드로 강제 덮어쓰기(Hard Reset)를 수행합니다.
         """
+        # 💡 [안전띠 결속] 깃허브 동기화 직전에 현재 상태를 백업합니다!
+        await self._create_safety_backup()
+
         try:
             fetch_proc = await asyncio.create_subprocess_shell(
                 "git fetch --all",
