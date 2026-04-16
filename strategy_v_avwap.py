@@ -6,6 +6,7 @@
 # 🚨 [PEP 8 포맷팅 패치] 미사용 변수(time_0930) 소각 (Ruff F841 교정 완료)
 # 🚨 [V25.23 디커플링] KIS API 하드코딩 종속성 적출 및 범용 1분봉 컬럼 정규화 완비
 # 🚨 [V27.06 긴급 수술] NameError (#ffffff) 소각 및 ZeroDivision 방어막 구축
+# 🚨 [V27.07 그랜드 수술] 코파일럿 합작 - 20MA NaN 붕괴, VWAP 침묵, 10시 누수, 소수점 주문 4대 맹점 전면 철거
 # ==========================================================
 import logging
 import datetime
@@ -17,40 +18,34 @@ import pandas as pd
 class VAvwapHybridPlugin:
     def __init__(self):
         self.plugin_name = "AVWAP_HYBRID_DUAL"
-        # MODIFIED: 기초자산(SOXX) 펀더멘털 스케일로 파라미터 변환 (3배수 레버리지 역산)
-        self.leverage = 3.0             # 투영(Projection)을 위한 레버리지 배수
-        self.base_stop_loss_pct = 0.01  # SOXX 기준 -1% (SOXL -3% 상당 하드스탑)
-        self.base_target_pct = 0.01     # SOXX 기준 +1% (SOXL +3% 상당 스퀴즈 익절)
-        self.base_dip_buy_pct = 0.0067  # SOXX 기준 -0.67% (SOXL -2% 상당 VWAP 바운스)
+        self.leverage = 3.0             
+        self.base_stop_loss_pct = 0.01  
+        self.base_target_pct = 0.01     
+        self.base_dip_buy_pct = 0.0067  
         
     def fetch_macro_context(self, base_ticker):
-        """
-        [Pre-Fetch] 야후 파이낸스를 통해 기초자산(SOXX)의 과거 20일 20MA 및 30분봉(09:30) 평균 거래량 추출
-        매일 장 초반 단 1회만 호출되어 메모리에 캐싱됩니다.
-        """
         try:
             tkr = yf.Ticker(base_ticker)
-            # 1. 20MA 추출용 일봉 데이터
             df_daily = tkr.history(period="2mo", interval="1d", timeout=5)
-            # 2. RVOL 추출용 30분봉 데이터
             df_30m = tkr.history(period="60d", interval="30m", timeout=5)
 
-            if df_daily.empty or len(df_daily) < 20 or df_30m.empty:
+            # 🚨 [수술 완료] 20MA의 iloc[-2] 연산을 위해 최소 21일치 데이터 보장 (NaN 붕괴 원천 차단)
+            if df_daily.empty or len(df_daily) < 21 or df_30m.empty:
                 return None
 
             prev_close = float(df_daily['Close'].iloc[-2])
             ma_20 = float(df_daily['Close'].rolling(window=20).mean().iloc[-2])
 
-            # 타임존 보정 (US/Eastern)
+            # 🚨 [수술 완료] 연산 결과가 NaN일 경우 컨텍스트 무효화
+            if math.isnan(ma_20) or math.isnan(prev_close):
+                return None
+
             if df_30m.index.tz is None:
                 df_30m.index = df_30m.index.tz_localize('UTC').tz_convert('US/Eastern')
             else:
                 df_30m.index = df_30m.index.tz_convert('US/Eastern')
 
-            # 09:30:00 캔들만 필터링
             first_30m = df_30m[df_30m.index.time == datetime.time(9, 30)]
-            
-            # 당일 09:30 캔들이 실시간으로 끼어있을 수 있으므로 과거 데이터만 추출
             today_est = datetime.datetime.now(pytz.timezone('US/Eastern')).date()
             past_first_30m = first_30m[first_30m.index.date < today_est]
             
@@ -71,73 +66,58 @@ class VAvwapHybridPlugin:
             logging.error(f"🚨 [V_AVWAP] YF 기초자산 매크로 컨텍스트 추출 실패 ({base_ticker}): {e}")
             return None
 
-    # MODIFIED: 듀얼 레퍼런싱을 위해 base(SOXX)와 exec(SOXL) 파라미터로 이원화
     def get_decision(self, base_ticker, exec_ticker, base_curr_p, exec_curr_p, base_day_open, avwap_avg_price, avwap_qty, avwap_alloc_cash, context_data, df_1min_base, now_est):
-        """
-        실시간 기초자산(SOXX) 데이터를 기반으로 V-Shape 암살자의 다음 행동을 결정하고 파생상품(SOXL) 호가로 타격합니다.
-        ⚠️ 주의: 여기서 파라미터로 받는 avwap_qty와 avwap_avg_price는 V-REV의 물량이 완벽히 배제된 순수 AVWAP 전용 수치여야 합니다.
-        """
         curr_time = now_est.time()
         
-        # 기본 시간 통제선
-        # MODIFIED: [PEP 8 교정] 미사용 변수 time_0930 영구 소각 완료
         time_1000 = datetime.time(10, 0)
         time_1400 = datetime.time(14, 0)
         time_1430 = datetime.time(14, 30)
         time_1555 = datetime.time(15, 55)
 
-        # --------------------------------------------------------
-        # 1. KIS 1분봉 데이터 기반 당일 기초자산(SOXX) VWAP 및 초반 30분 누적 거래량 동적 연산
-        # --------------------------------------------------------
-        # MODIFIED: 연산의 기준을 모두 기초자산(base_curr_p, df_1min_base)으로 동기화
         base_vwap = base_curr_p
         base_current_30m_vol = 0.0
+        vwap_success = False # 🚨 [수술 완료] VWAP 연산 성공 여부 플래그
         
         if df_1min_base is not None and not df_1min_base.empty:
             try:
                 df = df_1min_base.copy()
-                # MODIFIED: [V25.23 디커플링] 야후 파이낸스 범용 1분봉 데이터 컬럼 규격으로 정규화 (KIS 종속성 적출)
                 df['tp'] = (df['high'].astype(float) + df['low'].astype(float) + df['close'].astype(float)) / 3.0
                 df['vol'] = df['volume'].astype(float)
                 df['vol_tp'] = df['tp'] * df['vol']
                 
                 cum_vol = df['vol'].sum()
-                cum_vol_tp = df['vol_tp'].sum()
-                base_vwap = cum_vol_tp / cum_vol if cum_vol > 0 else base_curr_p
+                if cum_vol > 0:
+                    base_vwap = df['vol_tp'].sum() / cum_vol
+                    vwap_success = True
                 
-                # 09:30 ~ 10:00 (EST) 거래량 스캔 (정규화된 time_est 필드 사용)
-                mask_30m = (df['time_est'] >= '093000') & (df['time_est'] < '100100')
-                base_current_30m_vol = df.loc[mask_30m, 'vol'].sum()
+                # 🚨 [수술 완료] 문자열 규격화(zfill) 및 10:00 캔들 누수 차단('100000')
+                if 'time_est' in df.columns:
+                    df['time_est'] = df['time_est'].astype(str).str.zfill(6)
+                    mask_30m = (df['time_est'] >= '093000') & (df['time_est'] < '100000')
+                    base_current_30m_vol = df.loc[mask_30m, 'vol'].sum()
             except Exception as e:
-                logging.debug(f"[V_AVWAP] 기초자산 1분봉 파싱 에러 (기본값 대체): {e}")
+                logging.error(f"🚨 [V_AVWAP] 기초자산 1분봉 VWAP 연산 실패: {e}")
 
-        # --------------------------------------------------------
-        # 2. 보유 중일 때의 3중 청산 시퀀스 (Exit & Risk Management)
-        # --------------------------------------------------------
+        # 🚨 [수술 완료] VWAP 연산 실패 시 침묵(Phantom Buy) 방지 및 매수 동결
+        if not vwap_success and avwap_qty == 0:
+            return {'action': 'WAIT', 'reason': 'VWAP_데이터_결측_동결', 'vwap': base_vwap}
+
         if avwap_qty > 0:
-            # ① [하드스탑] 펀더멘털 스케일 손절 (SOXL의 손익률을 기초자산 비율로 역산하여 노이즈 방어)
-            # 🚨 [V27.06 수술 완료] ZeroDivision 방어 및 안전 평단가 적용
             safe_avg = avwap_avg_price if avwap_avg_price > 0 else exec_curr_p
             exec_return = (exec_curr_p - safe_avg) / safe_avg
             base_equivalent_return = exec_return / self.leverage
             
             if base_equivalent_return <= -self.base_stop_loss_pct:
-                return {'action': 'SELL', 'qty': avwap_qty, 'target_price': 0.0, 'reason': 'HARD_STOP_DUAL'}
+                return {'action': 'SELL', 'qty': int(avwap_qty), 'target_price': 0.0, 'reason': 'HARD_STOP_DUAL'}
             
-            # ② [타임스탑] 15:55 EST 도달 시 전량 청산 (장 마감 덤핑 회피)
             if curr_time >= time_1555:
-                return {'action': 'SELL', 'qty': avwap_qty, 'target_price': 0.0, 'reason': 'TIME_STOP'}
+                return {'action': 'SELL', 'qty': int(avwap_qty), 'target_price': 0.0, 'reason': 'TIME_STOP'}
                 
-            # ③ [스퀴즈 익절] 14:30 이후 기초자산(SOXX)이 당일 VWAP 대비 목표치 도달 시 홈런 익절
-            # MODIFIED: 기초자산 VWAP 돌파 여부로 스퀴즈 판별
-            if curr_time >= time_1430 and base_curr_p >= base_vwap * (1 + self.base_target_pct):
-                return {'action': 'SELL', 'qty': avwap_qty, 'target_price': 0.0, 'reason': 'SQUEEZE_TARGET_DUAL'}
+            if vwap_success and curr_time >= time_1430 and base_curr_p >= base_vwap * (1 + self.base_target_pct):
+                return {'action': 'SELL', 'qty': int(avwap_qty), 'target_price': 0.0, 'reason': 'SQUEEZE_TARGET_DUAL'}
                 
             return {'action': 'HOLD', 'reason': '보유중_관망', 'vwap': base_vwap}
 
-        # --------------------------------------------------------
-        # 3. 신규 진입 시퀀스 (AVWAP 단독 보유 물량 0주)
-        # --------------------------------------------------------
         if not context_data:
             return {'action': 'WAIT', 'reason': '매크로_데이터_수집대기', 'vwap': base_vwap}
 
@@ -145,31 +125,24 @@ class VAvwapHybridPlugin:
         ma_20 = context_data['ma_20']
         avg_vol_20 = context_data['avg_vol_20']
 
-        # ① [상승장 필터] 기초자산의 시가 및 전일 종가가 20MA 상단인지 확인
-        # MODIFIED: 기초자산(base_day_open) 펀더멘털 20MA 상회 여부
         is_bull_regime = (prev_c > ma_20) and (base_day_open > ma_20)
         if not is_bull_regime:
             return {'action': 'SHUTDOWN', 'reason': '기초자산_역배열_하락장_영구동결', 'vwap': base_vwap}
             
-        # ② [갭하락 필터] 기초자산 시가가 전일 종가 대비 임계치 이하일 경우 동결
-        # MODIFIED: SOXX 스케일의 갭하락 기준 적용
         if base_day_open <= prev_c * (1 - self.base_dip_buy_pct):
             return {'action': 'SHUTDOWN', 'reason': '기초자산_시가_갭하락_영구동결', 'vwap': base_vwap}
             
-        # ③ [구조적 붕괴 RVOL 필터] 10:00 EST 시점 기초자산 거래량 폭발 판단
         if curr_time >= time_1000:
-            # 🚨 [V27.06 수술 완료] #ffffff 오타 소각 및 정상 변수(avg_vol_20) 할당
             if avg_vol_20 > 0 and base_current_30m_vol >= (avg_vol_20 * 2.0) and base_curr_p < base_vwap:
                 return {'action': 'SHUTDOWN', 'reason': '기초자산_RVOL_스파이크_영구동결', 'vwap': base_vwap}
                 
-        # ④ [핀포인트 진입] 10:00 ~ 14:00 사이 기초자산이 당일 VWAP 대비 이격도 도달 시 파생상품(SOXL) 매수
         if time_1000 <= curr_time <= time_1400:
-            # MODIFIED: SOXX 가격이 앵커 도달 시 SOXL 현재가(exec_curr_p)로 물량 산정 후 100% 타격
             if base_curr_p <= base_vwap * (1 - self.base_dip_buy_pct):
-                buy_qty = math.floor(avwap_alloc_cash / exec_curr_p)
-                if buy_qty > 0:
-                    return {'action': 'BUY', 'qty': buy_qty, 'target_price': exec_curr_p, 'reason': 'VWAP_BOUNCE_DUAL', 'vwap': base_vwap}
-                else:
-                    return {'action': 'WAIT', 'reason': '예산_부족_관망', 'vwap': base_vwap}
+                # 🚨 [수술 완료] ZeroDivision 방어 및 명시적 int() 캐스팅으로 API Reject 원천 차단
+                if exec_curr_p > 0 and avwap_alloc_cash > 0:
+                    buy_qty = int(math.floor(avwap_alloc_cash / exec_curr_p))
+                    if buy_qty > 0:
+                        return {'action': 'BUY', 'qty': buy_qty, 'target_price': exec_curr_p, 'reason': 'VWAP_BOUNCE_DUAL', 'vwap': base_vwap}
+                return {'action': 'WAIT', 'reason': '예산_부족_관망', 'vwap': base_vwap}
                     
         return {'action': 'WAIT', 'reason': '타점_대기중', 'vwap': base_vwap}
