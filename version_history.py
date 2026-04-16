@@ -207,5 +207,6 @@ VERSION_HISTORY = [
     "V27.14 [2026.04.16] 🚨 [Queue Ledger 장부 코어 그랜드 수술 (✨코파일럿 AI 합작)]: Atomic Write(장부 증발 방어), Thread Lock(동시접근 덮어쓰기 차단), 유령 로트(0주) 무한루프 소각, EST 타임존 병합 통일 및 백업 자가 치유(Self-Healing) 파이프라인 완벽 구축 (수정: queue_ledger)",
     "V27.15 [2026.04.16] 🚨 [Telegram Bot 관제탑 그랜드 수술 (✨코파일럿 AI 합작)]: tx_lock 병목(Starvation) 해체, 0.0달러 매도 폭탄 제거, 런타임 즉사(Attribute/KeyError) 방어, Atomic Write 도입 및 Dangling 코드 복구 (수정: telegram_bot)",
     "V27.16 [2026.04.16] 🚨 [Telegram View 렌더링 코어 수술 (✨코파일럿 AI 합작)]: KeyError 런타임 즉사 방어(Safe Get), FileNotFoundError 졸업카드 증발 차단, 외화 RP 이중 계산 환각 UI 제거 및 유령 지층(None Date) 통제망 구축 완료 (수정: telegram_view)",
-    "V27.17 [2026.04.16] 🚨 [Volatility Engine 코어 그랜드 수술 (✨코파일럿 AI 합작)]: 가중치 무제한 폭주(Black Swan) 락온 방어(0.5~2.0), UnboundLocalError 런타임 즉사 교정, 임시 파일 찌꺼기(Disk Leak) 소각, 야후 파이낸스 다중인덱스(MultiIndex) 붕괴 스마트 우회 엔진 및 ATR 최소 데이터 검증망 이식 (수정: volatility_engine)"
+    "V27.17 [2026.04.16] 🚨 [Volatility Engine 코어 그랜드 수술 (✨코파일럿 AI 합작)]: 가중치 무제한 폭주(Black Swan) 락온 방어(0.5~2.0), UnboundLocalError 런타임 즉사 교정, 임시 파일 찌꺼기(Disk Leak) 소각, 야후 파이낸스 다중인덱스(MultiIndex) 붕괴 스마트 우회 엔진 및 ATR 최소 데이터 검증망 이식 (수정: volatility_engine)",
+    "V27.18 [2026.04.16] 🚨 [Broker 코어 팩트 교정 (✨코파일럿 AI 합작)]: 5분봉 고가/저가(H/L) 스캔 범위 정상화, 주문 취소 정밀도(break) 교정, 매도 가능 수량(ord_psbl_qty) 안전 폴백(0) 적용, 토큰 오발탄(mig) 제거 및 ATR 결측치(NaN) 방어. 주식 정수 매매 원칙에 따른 소수점 내림(Truncation) 및 잔여 예산 이월 로직 100% 원상 복구 (수정: broker)"
 ]

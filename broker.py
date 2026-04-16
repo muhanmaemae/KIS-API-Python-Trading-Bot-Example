@@ -1,13 +1,16 @@
 # ==========================================================
-# [broker.py] - 🌟 100% 통합 완성본 🌟
+# [broker.py] - 🌟 100% 통합 무결점 완성본 🌟
 # ⚠️ 수술 내역: 야후 파이낸스(yfinance) 좀비 스레드 누적 방지
 # 모든 history() 호출에 timeout=5 파라미터 강제 주입 완료
 # 🚨 [V25.19 핫픽스] 토큰 만료 시간 타임존(Timezone) Naive/Aware 충돌 교정
 # 🚨 [V25.20 핫픽스] 잭팟 스윕 피니셔 디커플링 연산을 위한 ord_psbl_qty 확장 이식
 # 🚨 [V25.23 디커플링] 범용 1분봉 스캔 엔진(get_1min_candles_df) 신설 탑재
 # 🚨 [V25.25 핫픽스] 애프터마켓(AFTER_LIMIT) KIS 주문 코드 규격(00) 교정
-# 🚨 [V27.09 그랜드 수술] 코파일럿 합작 - 토큰 타임존 붕괴, 애프터마켓 캔들 오염, 
-# 마이너스 잔고 폭주, 0주/0달러 API Reject 맹점 등 6대 치명적 버그 전면 철거
+# 🚨 [V27.09 그랜드 수술] 토큰 타임존 붕괴, 애프터마켓 캔들 오염 방어 등 6대 버그 철거
+# 🚨 [V27.18 그랜드 수술] 코파일럿 합작 - 5분봉 고가/저가(H/L) 스캔 범위 정상화, 
+# 주문 취소 정밀도(break) 교정, 매도 가능 수량(ord_psbl_qty) 안전 폴백(0) 적용, 
+# 토큰 오발탄(mig) 제거 및 ATR 결측치(NaN) 방어 
+# 🚨 [V27.18 팩트 교정] 주식 정수 매매 원칙에 따른 소수점 내림(Truncation) 및 잔여 예산 이월 로직 100% 원상 복구
 # ==========================================================
 
 import requests
@@ -64,7 +67,6 @@ class KoreaInvestmentBroker:
             data = res.json()
             if 'access_token' in data:
                 self.token = data['access_token']
-                # 🚨 [수술 완료] KST(한국시간) 기준으로 타임존 강제 락온 (클라우드 UTC 오동작 원천 차단)
                 expire_str = (datetime.datetime.now(kst).replace(tzinfo=None) + datetime.timedelta(seconds=int(data['expires_in']))).strftime('%Y-%m-%d %H:%M:%S')
                 
                 dir_name = os.path.dirname(self.token_file)
@@ -93,6 +95,11 @@ class KoreaInvestmentBroker:
         }
 
     def _api_request(self, method, url, headers, params=None, data=None):
+        TOKEN_EXPIRY_KEYWORDS = frozenset([
+            '토큰', '접근토큰', 'token', 'expired', '인증', 'authorization',
+            'egt0001', 'egt0002', 'oauth'
+        ])
+        
         for attempt in range(2): 
             try:
                 if method.upper() == "GET":
@@ -103,14 +110,15 @@ class KoreaInvestmentBroker:
                 resp_json = res.json()
                 
                 if resp_json.get('rt_cd') != '0':
-                    msg1 = resp_json.get('msg1', '')
-                    if any(x in msg1.lower() for x in ['토큰', '접근토큰', 'token', 'expired', 'mig', '인증', 'authorization']):
+                    msg1_lower = resp_json.get('msg1', '').lower()
+                    msg_cd = resp_json.get('msg_cd', '').lower()
+                    
+                    if any(x in msg1_lower or x in msg_cd for x in TOKEN_EXPIRY_KEYWORDS):
                         if attempt == 0: 
-                            old_token = self.token # 🚨 [수술 완료] 토큰 갱신 실패 감지용 백업
-                            print(f"\n🚨 [안전장치 가동] API 토큰 만료 감지! : {msg1}")
+                            old_token = self.token 
+                            print(f"\n🚨 [안전장치 가동] API 토큰 만료 감지! : {msg1_lower}")
                             self._get_access_token(force=True)
                             
-                            # 🚨 [수술 완료] 토큰 갱신 자체가 실패했다면 무한 루프(Silent Loop) 차단
                             if self.token == old_token or self.token is None:
                                 print("🚨 [Broker] 토큰 갱신 실패. 재시도 중단.")
                                 return res, resp_json
@@ -199,7 +207,6 @@ class KoreaInvestmentBroker:
             buy_amt = self._safe_float(o2.get('frcr_buy_amt_smtl', 0))      
             
             raw_bp = dncl_amt + sll_amt - buy_amt
-            # 🚨 [수술 완료] 마이너스 계좌 잔고로 인한 수량 음수(Negative) 연쇄 붕괴 원천 차단
             cash = max(0.0, math.floor((raw_bp * 0.9945) * 100) / 100.0)
 
         target_excgs = ["NASD", "AMEX", "NYSE"] 
@@ -219,8 +226,9 @@ class KoreaInvestmentBroker:
                 for item in res_hold.get('output1', []):
                     ticker = item.get('ovrs_pdno')
                     qty = int(self._safe_float(item.get('ovrs_cblc_qty', 0)))
-                    ord_psbl_qty = int(self._safe_float(item.get('ord_psbl_qty', qty)))
+                    ord_psbl_qty = int(self._safe_float(item.get('ord_psbl_qty', 0)))
                     avg = self._safe_float(item.get('pchs_avg_pric', 0))
+                    
                     if qty > 0 and ticker not in holdings: 
                         holdings[ticker] = {'qty': qty, 'ord_psbl_qty': ord_psbl_qty, 'avg': avg}
         
@@ -264,14 +272,13 @@ class KoreaInvestmentBroker:
             vol_ma10 = float(last_candle['Vol_MA10']) if not pd.isna(last_candle['Vol_MA10']) else float(last_candle['Volume'])
             vol_ma20 = float(last_candle['Vol_MA20']) if not pd.isna(last_candle['Vol_MA20']) else float(last_candle['Volume'])
             
-            # 🚨 [수술 완료] 애프터마켓의 유령 캔들 오염 방지를 위해 필터링된 정규장(regular_market) 마지막 데이터 사용
             latest_1m = regular_market.iloc[-1] 
             
             return {
                 'open': float(last_candle['Open']),
-                'high': float(latest_1m['High']),  
-                'low': float(latest_1m['Low']),    
-                'close': float(latest_1m['Close']),
+                'high': float(last_candle['High']),  
+                'low': float(last_candle['Low']),    
+                'close': float(latest_1m['Close']), 
                 'volume': float(last_candle['Volume']), 
                 'vol_ma10': vol_ma10,
                 'vol_ma20': vol_ma20,
@@ -471,11 +478,16 @@ class KoreaInvestmentBroker:
             if o.get('sll_buy_dvsn_cd') == sll_buy_cd:
                 raw_p1, raw_p2, raw_p3 = o.get('ft_ord_unpr3', 0), o.get('ord_unpr', 0), o.get('ovrs_ord_unpr', 0)
                 o_price = 0.0
+                
                 for rp in [raw_p1, raw_p2, raw_p3]:
                     try:
                         val = float(rp)
-                        if val > 0: o_price, _ = val, True
-                    except: pass
+                        if val > 0:
+                            o_price = val
+                            break 
+                    except (TypeError, ValueError):
+                        pass
+                        
                 for tp in target_prices:
                     if o_price > 0 and abs(o_price - tp) < 0.005: 
                         target_orders.append(o)
@@ -488,8 +500,13 @@ class KoreaInvestmentBroker:
         return len(target_orders)
 
     def send_order(self, ticker, side, qty, price, order_type="LIMIT"):
-        # 🚨 [수술 완료] API Reject 방어: 음수 또는 0주 주문 원천 차단
-        order_qty = int(qty)
+        # 🚨 [원상 복구 완료] 주식 정수 매매 원칙에 따른 소수점 내림(Truncation) 및 예산 이월 팩트 복구
+        try:
+            order_qty = int(float(qty))
+        except (TypeError, ValueError):
+            print(f"🚨 [Broker] send_order 거부: qty 타입 변환 불가 ({qty!r})")
+            return {'rt_cd': '999', 'msg1': f'유효하지 않은 주문 수량 타입: {qty!r}'}
+
         if order_qty <= 0:
             print(f"🚨 [Broker] send_order 거부: 유효하지 않은 수량 ({qty})")
             return {'rt_cd': '999', 'msg1': f'유효하지 않은 주문 수량: {qty}'}
@@ -506,7 +523,6 @@ class KoreaInvestmentBroker:
 
         final_price = self._ceil_2(price)
         if order_type in ["MOC", "MOO"]: final_price = 0
-        # 🚨 [수술 완료] API Reject 방어: 지정가(LIMIT 계열) 주문 시 0달러 전송 차단
         elif order_type not in ["MOC", "MOO"] and final_price <= 0.0:
             print(f"🚨 [Broker] send_order 거부: {order_type} 주문에 유효하지 않은 가격 ({price})")
             return {'rt_cd': '999', 'msg1': f'유효하지 않은 주문 가격: {price}'}
@@ -712,7 +728,14 @@ class KoreaInvestmentBroker:
             last_close = float(last_row['Close'])
             
             if last_close > 0:
-                return round((float(last_row['ATR5']) / last_close) * 100, 1), round((float(last_row['ATR14']) / last_close) * 100, 1)
+                atr5_val  = last_row['ATR5']
+                atr14_val = last_row['ATR14']
+                
+                if pd.isna(atr5_val) or pd.isna(atr14_val):
+                    print(f"⚠️ [Broker] ATR 연산 결과 NaN 감지 ({ticker}): 데이터 갭 의심. 0.0 리턴")
+                    return 0.0, 0.0
+                
+                return round((float(atr5_val) / last_close) * 100, 1), round((float(atr14_val) / last_close) * 100, 1)
             return 0.0, 0.0
         except Exception as e:
             print(f"⚠️ [Broker] 실시간 ATR 연산 실패 ({ticker}): {e}")
