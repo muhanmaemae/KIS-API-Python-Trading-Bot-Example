@@ -206,5 +206,6 @@ VERSION_HISTORY = [
     "V27.13 [2026.04.25] 🚨 [Scheduler Trade 전투 사령부 팩트 교정 (✨코파일럿 AI 합작)]: 0주 새출발 확정 매수(/ 0.935) 원본 100% 복구, all_success 딕셔너리 붕괴 차단, 상위 평단가 음수 오류 해결, V14 가격 기억상실 방어 및 스냅샷 은폐 사고(finally) 완전 봉쇄 (수정: scheduler_trade)",
     "V27.14 [2026.04.26] 🚨 [Queue Ledger 장부 코어 그랜드 수술 (✨코파일럿 AI 합작)]: Atomic Write(장부 증발 방어), Thread Lock(동시접근 덮어쓰기 차단), 유령 로트(0주) 무한루프 소각, EST 타임존 병합 통일 및 백업 자가 치유(Self-Healing) 파이프라인 완벽 구축 (수정: queue_ledger)",
     "V27.15 [2026.04.27] 🚨 [Telegram Bot 관제탑 그랜드 수술 (✨코파일럿 AI 합작)]: tx_lock 병목(Starvation) 해체, 0.0달러 매도 폭탄 제거, 런타임 즉사(Attribute/KeyError) 방어, Atomic Write 도입 및 Dangling 코드 복구 (수정: telegram_bot)",
-    "V27.16 [2026.04.28] 🚨 [Telegram View 렌더링 코어 수술 (✨코파일럿 AI 합작)]: KeyError 런타임 즉사 방어(Safe Get), FileNotFoundError 졸업카드 증발 차단, 외화 RP 이중 계산 환각 UI 제거 및 유령 지층(None Date) 통제망 구축 완료 (수정: telegram_view)"
+    "V27.16 [2026.04.28] 🚨 [Telegram View 렌더링 코어 수술 (✨코파일럿 AI 합작)]: KeyError 런타임 즉사 방어(Safe Get), FileNotFoundError 졸업카드 증발 차단, 외화 RP 이중 계산 환각 UI 제거 및 유령 지층(None Date) 통제망 구축 완료 (수정: telegram_view)",
+    "V27.17 [2026.04.29] 🚨 [Volatility Engine 코어 그랜드 수술 (✨코파일럿 AI 합작)]: 가중치 무제한 폭주(Black Swan) 락온 방어(0.5~2.0), UnboundLocalError 런타임 즉사 교정, 임시 파일 찌꺼기(Disk Leak) 소각, 야후 파이낸스 다중인덱스(MultiIndex) 붕괴 스마트 우회 엔진 및 ATR 최소 데이터 검증망 이식 (수정: volatility_engine)"
 ]
