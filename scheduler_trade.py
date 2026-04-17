@@ -18,6 +18,7 @@
 # 🚨 [V27.14 핫픽스] AVWAP 예산 중복 소진 차단, 스윕 잔여 주문 취소, VWAP 예외 전파 붕괴 방어막 이식
 # 🚀 [V28.01 핫픽스] 정규장 스케줄러 타임 윈도우 15분 확장 (APScheduler 지연 붕괴 원천 차단)
 # 🚀 [V28.02 그랜드 수술] 코파일럿 엣지 케이스 3대 결함(DST 데드락 65분 확장, prev_c 결측 텔레그램 타전, tx_lock 콜드스타트 가드) 전면 수술 완료
+# 🚀 [V28.03 그랜드 수술] 엣지 케이스 4대 결함(이중 매도 방지, 클램핑 수학 모순 교정, 큐 증발 폴백, 잠금 스킵 타전) 및 UX 렌더링 충돌 교정 완비
 # ==========================================================
 import os
 import logging
@@ -542,6 +543,8 @@ async def scheduled_vwap_trade(context):
 # [scheduler_trade.py] - 🌟 100% 통합 완성본 🌟 (Part 2)
 # ==========================================================
 
+# ... (앞선 1부 코드의 scheduled_vwap_trade 함수 끝부분에 이어집니다) ...
+
 # ==========================================================
 # 4. 🌅 정규장 오픈 (17:05) 전송 (V14 통합 & V-REV 예방 방어선)
 # ==========================================================
@@ -606,7 +609,16 @@ async def scheduled_regular_trade(context):
             v_rev_tickers = [] 
 
             for t in sorted_tickers:
-                if cfg.check_lock(t, "REG"): continue
+                # MODIFIED: [EC-10] REG 잠금 미해제 시 조용히 스킵하지 않고 logging.warning + 텔레그램 경고 발송
+                if cfg.check_lock(t, "REG"):
+                    logging.warning(f"⚠️ [{t}] REG 잠금이 해제되지 않은 채 17:05 루프 진입. 자정 초기화 실패 가능성 있음. 해당 종목 주문 전체 스킵.")
+                    skip_msg = (
+                        f"⚠️ <b>[{t}] REG 잠금 미해제 — 주문 스킵</b>\n"
+                        f"▫️ 전날 REG 잠금이 자정 초기화 시 해제되지 않아 오늘 17:05 주문 루프에서 제외되었습니다.\n"
+                        f"▫️ 수동으로 잠금 해제 후 [🚀 V-REV 방어선 수동 장전] 버튼을 눌러 재장전하십시오."
+                    )
+                    await context.bot.send_message(chat_id, skip_msg, parse_mode='HTML')
+                    continue
                 
                 h = holdings.get(t) or {}
                 curr_p = float(await asyncio.to_thread(broker.get_current_price, t) or 0.0)
@@ -652,7 +664,8 @@ async def scheduled_regular_trade(context):
                                 l1_qty = min(l1_qty_raw, safe_qty)
                                 
                                 if l1_qty > 0:
-                                    l1_price = sum(item.get('qty', 0) * item.get('price', 0.0) for item in lots_1) / l1_qty_raw
+                                    # MODIFIED: [EC-4] 클램핑 후 분모를 l1_qty_raw → l1_qty로 교정하여 가중 평균 단가 오차 방지
+                                    l1_price = sum(item.get('qty', 0) * item.get('price', 0.0) for item in lots_1) / l1_qty
                             
                             target_l1 = round(l1_price * 1.006, 2)
                             if l1_qty > 0:
@@ -671,6 +684,21 @@ async def scheduled_regular_trade(context):
                                     
                                 target_upper = round(upper_avg * 1.005, 2)
                                 loc_orders.append({'side': 'SELL', 'qty': upper_qty, 'price': target_upper, 'type': 'LOC', 'desc': '[상위 재고]'})
+                                
+                        # MODIFIED: [EC-5] q_data 증발(서버 재시작 등)로 큐가 비었지만 실제 보유 수량이 있는 경우 Fallback LOC 매도 안전망 추가
+                        elif not q_data and safe_qty > 0:
+                            logging.warning(f"⚠️ [{t}] V-REV 큐 데이터 부재 + 실제 보유 {safe_qty}주 감지! Fallback LOC 매도 방어선을 생성합니다.")
+                            await context.bot.send_message(
+                                chat_id,
+                                f"⚠️ <b>[{t}] V-REV 큐 증발 감지 — Fallback 매도선 생성</b>\n"
+                                f"▫️ 내부 큐: 비어있음 / 실제 보유: {safe_qty}주\n"
+                                f"▫️ 서버 재시작 등으로 큐가 초기화된 것으로 판단됩니다.\n"
+                                f"▫️ 총 보유 평단가({safe_avg:.2f}) × 1.005 기준 전량 Fallback LOC 매도선을 설정합니다.",
+                                parse_mode='HTML'
+                            )
+                            fallback_target = round(safe_avg * 1.005, 2) if safe_avg > 0 else 0.0
+                            if fallback_target >= 0.01:
+                                loc_orders.append({'side': 'SELL', 'qty': safe_qty, 'price': fallback_target, 'type': 'LOC', 'desc': '[Fallback 전량]'})
                         
                         if prev_c > 0:
                             b1_price = round(prev_c * 0.999 if v_rev_q_qty == 0 else prev_c * 0.995, 2)
@@ -689,14 +717,19 @@ async def scheduled_regular_trade(context):
                                         grid_p = round(half_portion_cash / (b2_qty + n), 2)
                                         if grid_p >= 0.01 and grid_p < b2_price:
                                             loc_orders.append({'side': 'BUY', 'qty': 1, 'price': grid_p, 'type': 'LOC', 'desc': f'예방적 줍줍({n})'})
-                        # MODIFIED: [Bug #2 수술] prev_c = 0 (API 결측치)일 때 조용히 매수 방어선 누락되는 맹점 타전 및 락 차단
+                                            
+                            # MODIFIED: UX 텍스트 충돌 방어 - 정상 수신 시 출력
+                            msgs[t] += f"🛡️ <b>[{t}] V-REV 예방적 양방향 LOC 방어선 장전 완료</b>\n"
                         else:
+                            # MODIFIED: [Bug #2 수술] prev_c = 0 (API 결측치)일 때 조용히 매수 방어선 누락되는 맹점 타전 및 락 차단
                             logging.error(f"🚨 [{t}] V-REV 전일 종가(prev_c) 취득 실패(0). 매수 방어선(Buy1/Buy2/줍줍) 미장전!")
                             msgs[t] += (
                                 f"🚨 <b>[{t}] 전일 종가 API 결측치 감지!</b>\n"
                                 f"▫️ prev_c = 0 수신 → 매수 방어선(Buy1/Buy2/줍줍)을 <b>장전하지 못했습니다.</b>\n"
-                                f"▫️ 매도 방어선만 전송된 상태입니다. 수동으로 [🚀 V-REV 방어선 수동 장전] 버튼을 눌러 재장전하거나 다음 날 확인하십시오.\n"
+                                f"▫️ 수동으로 [🚀 V-REV 방어선 수동 장전] 버튼을 눌러 재장전하거나 다음 날 확인하십시오.\n"
                             )
+                            # MODIFIED: UX 텍스트 충돌 방어 - 매수 누락 시 부분 장전 안내 표출
+                            msgs[t] += f"⚠️ <b>[{t}] V-REV 예방적 LOC 방어선 부분 장전 (매도 전용)</b>\n"
                             all_success_map[t] = False
                         
                         plan_result = {
@@ -713,7 +746,6 @@ async def scheduled_regular_trade(context):
                                 import shutil
                                 shutil.copy(old_snap, new_snap)
 
-                        msgs[t] += f"🛡️ <b>[{t}] V-REV 예방적 양방향 LOC 방어선 장전 완료</b>\n"
                         if safe_qty == 0 or v_rev_q_qty == 0:
                             msgs[t] += "🚫 <code>[0주 새출발] 기준 평단가 부재로 줍줍 생략 (1층 확보에 예산 100% 집중)</code>\n"
 
@@ -737,11 +769,15 @@ async def scheduled_regular_trade(context):
                         
                         msgs[t] += f"🛡️ <b>[{t}] 무매4(VWAP) 예방적 LOC 덫 장전 완료</b>\n"
 
+                    # MODIFIED: [EC-3] 이중 매도 방어: 성공한 매도 주문 카운트 추적
+                    sell_success_count = 0
                     for o in loc_orders:
                         res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
                         is_success = res.get('rt_cd') == '0'
                         if not is_success: all_success_map[t] = False
-                        
+                        if is_success and o['side'] == 'SELL':
+                            sell_success_count += 1
+                            
                         err_msg = res.get('msg1', '오류')
                         status_icon = '✅' if is_success else f'❌({err_msg})'
                         msgs[t] += f"└ {o['desc']} {o['qty']}주 (${o['price']}): {status_icon}\n"
@@ -750,6 +786,10 @@ async def scheduled_regular_trade(context):
                     if all_success_map[t] and len(loc_orders) > 0:
                         cfg.set_lock(t, "REG")
                         msgs[t] += "\n🔒 <b>방어선 전송 완료 (매매 잠금 설정됨)</b>"
+                    # MODIFIED: [EC-3] 매도 방어선이 단 1개라도 성공했다면 반쪽짜리 잠금을 강제 설정하여 1분 뒤 이중 투매 대참사 원천 차단
+                    elif sell_success_count > 0:
+                        cfg.set_lock(t, "REG")
+                        msgs[t] += "\n⚠️ <b>일부 방어선 구축 실패 (반쪽짜리 잠금 설정됨)</b>"
                     elif len(loc_orders) == 0:
                         msgs[t] += "\n⚠️ <b>전송할 방어선(예산/수량)이 없습니다.</b>"
                     else:
