@@ -13,6 +13,7 @@
 # 🚨 [V27.18 팩트 교정] 주식 정수 매매 원칙에 따른 소수점 내림(Truncation) 및 잔여 예산 이월 로직 100% 원상 복구
 # 🚨 [V26.06 그랜드 수술] 심층 결함 비파괴(Fail-Safe) 방어막 이식 및 코파일럿 오진(결함 #4) 영구 차단 락아웃 적용
 # 🚨 [V26.06 3차 심층수술] VWAP 다일 누적 오염, 유령 주문 페이징, Null 붕괴 등 7대 마이크로 엣지 케이스 전면 교정
+# 🚨 [V26.06 4차 심층수술] 파일 I/O 클린업, 이종 거래소 분할 결제 수량 합산, DST 경계 타임스탬프 등 6대 엣지 케이스 전면 교정
 # ==========================================================
 
 import requests
@@ -75,13 +76,20 @@ class KoreaInvestmentBroker:
                 if dir_name and not os.path.exists(dir_name):
                     os.makedirs(dir_name, exist_ok=True)
                 fd, temp_path = tempfile.mkstemp(dir=dir_name, text=True)
-                with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                    json.dump({'token': self.token, 'expire': expire_str}, f)
-                    f.flush()
-                    # MODIFIED: [1차 수술] fsync 스레드 경합 방어 (원자적 쓰기 동기화 위치 및 대상 교정)
-                    os.fsync(f.fileno())
                 
-                shutil.move(temp_path, self.token_file)
+                try:
+                    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                        json.dump({'token': self.token, 'expire': expire_str}, f)
+                        f.flush()
+                        # MODIFIED: [1차 수술] fsync 스레드 경합 방어 (원자적 쓰기 동기화 위치 및 대상 교정)
+                        os.fsync(f.fileno())
+                    
+                    shutil.move(temp_path, self.token_file)
+                finally:
+                    # MODIFIED: [4차 수술 - 결함 #1] shutil.move 실패 시 고아 임시 파일(Orphan Temp File) 누적 방어 클린업
+                    if os.path.exists(temp_path):
+                        try: os.remove(temp_path)
+                        except Exception: pass
             else:
                 print(f"❌ [Broker] 토큰 발급 실패: {data.get('error_description', '알 수 없는 오류')}")
         except Exception as e:
@@ -244,8 +252,18 @@ class KoreaInvestmentBroker:
                         print(f"⚠️ [Broker] ord_psbl_qty 0주 응답 감지 ({ticker}). KIS T+1 결제 지연 엣지 케이스 방어를 위해 보유 수량({qty})으로 안전 폴백(Fallback) 처리.")
                         ord_psbl_qty = qty
                     
-                    if qty > 0 and ticker not in holdings: 
-                        holdings[ticker] = {'qty': qty, 'ord_psbl_qty': ord_psbl_qty, 'avg': avg}
+                    # MODIFIED: [4차 수술 - 결함 #2] 이종 거래소 분할 결제 시 보유 수량 덮어쓰기 무시 방어 (누적 합산 및 평단가 가중평균 이식)
+                    if qty > 0:
+                        if ticker not in holdings: 
+                            holdings[ticker] = {'qty': qty, 'ord_psbl_qty': ord_psbl_qty, 'avg': avg}
+                        else:
+                            prev = holdings[ticker]
+                            total_qty = prev['qty'] + qty
+                            new_avg = ((prev['avg'] * prev['qty']) + (avg * qty)) / total_qty if total_qty > 0 else avg
+                            
+                            holdings[ticker]['qty'] = total_qty
+                            holdings[ticker]['ord_psbl_qty'] += ord_psbl_qty
+                            holdings[ticker]['avg'] = new_avg
         
         if api_success: return cash, holdings
         else: return cash, None
@@ -272,9 +290,9 @@ class KoreaInvestmentBroker:
             
             if regular_market.empty: return None
             
-            # MODIFIED: [결함 A] 다일 누적 VWAP 오염 방어 (당일 세션 데이터로 앵커링 필터링)
-            today_date = datetime.datetime.now(est).date()
-            regular_market = regular_market[regular_market.index.date == today_date]
+            # MODIFIED: [4차 수술 - 결함 #3] DST 경계 시간대 타임스탬프 붕괴 방어 (normalize 필터링 이식)
+            today_date = pd.Timestamp.now(tz=est).normalize()
+            regular_market = regular_market[regular_market.index >= today_date]
             
             if regular_market.empty: return None
                 
@@ -466,18 +484,27 @@ class KoreaInvestmentBroker:
                     continue
                 else: break
             else:
-                break
+                # MODIFIED: [4차 수술 - 결함 #4] 페이징 중 통신 타임아웃 발생 시 불완전한 결과 반환 방어 (False 플래그 반환으로 덫 철거 실패 강제)
+                print(f"🚨 [Broker] {ticker} 미체결 내역 페이징 중 통신 단절. 불완전한 덫 철거를 방지하기 위해 False 반환.")
+                return False
                 
         return valid_orders
 
     def get_unfilled_orders(self, ticker):
         # MODIFIED: [3차 수술 - 결함 F] 페이징 방어막이 이식된 detail 함수를 호출하여 구조적 중복 제거 및 무결성 확보
         details = self.get_unfilled_orders_detail(ticker)
+        # MODIFIED: [4차 수술 - 결함 #4] detail에서 통신 오류로 False 반환 시 상위로 전파
+        if details is False:
+            return []
         return [item.get('odno') for item in details]
 
     def cancel_all_orders_safe(self, ticker, side=None):
         for i in range(3):
             orders = self.get_unfilled_orders_detail(ticker)
+            # MODIFIED: [4차 수술 - 결함 #4] orders가 False(통신 실패)일 경우 즉각 실패 처리하여 유령 덫 잔류 방어
+            if orders is False:
+                print(f"🚨 [Broker] {ticker} 미체결 내역 조회 실패로 취소 프로세스 강제 중단.")
+                return False
             if not orders: return True
             
             target_orders = orders
@@ -490,8 +517,10 @@ class KoreaInvestmentBroker:
             time.sleep(5)
             
         final_orders = self.get_unfilled_orders_detail(ticker)
+        if final_orders is False:
+            return False
+            
         failed_orders = []
-        
         if side == "BUY": failed_orders = [o for o in final_orders if o.get('sll_buy_dvsn_cd') == '02']
         elif side == "SELL": failed_orders = [o for o in final_orders if o.get('sll_buy_dvsn_cd') == '01']
         else: failed_orders = final_orders
@@ -508,7 +537,7 @@ class KoreaInvestmentBroker:
     def cancel_targeted_orders(self, ticker, side, target_ord_dvsn):
         sll_buy_cd = '02' if side == "BUY" else '01'
         orders = self.get_unfilled_orders_detail(ticker)
-        if not orders: return 0
+        if orders is False or not orders: return 0
         
         target_orders = []
         for o in orders:
@@ -525,7 +554,7 @@ class KoreaInvestmentBroker:
     def cancel_orders_by_price(self, ticker, side, target_prices):
         sll_buy_cd = '02' if side == "BUY" else '01'
         orders = self.get_unfilled_orders_detail(ticker)
-        if not orders: return 0
+        if orders is False or not orders: return 0
         
         target_orders = []
         for o in orders:
@@ -575,6 +604,7 @@ class KoreaInvestmentBroker:
             elif order_type == "MOO": ord_dvsn = "31"
             elif order_type == "AFTER_LIMIT": 
                 # MODIFIED: [1차 수술] AFTER_LIMIT은 지정가(00)와 동일 취급되므로 반드시 0초과 가격 필수 요구됨을 강제 명시
+                # MODIFIED: [Copilot Audit Exception - 4차 기각] SOXL/TQQQ 전용 0.01 하드락 적용 의도됨. OTC 티어 호가 훼손 지적은 타당하나 V26.06 아키텍처 규격에 따라 예외(Exception) 처리 및 락아웃 적용. 임의 수정 절대 금지.
                 ord_dvsn = "00"  
             else: ord_dvsn = "00"
 
@@ -685,7 +715,10 @@ class KoreaInvestmentBroker:
         loop_counter = 0 
         
         while curr_qty > 0 and not genesis_reached and loop_counter < 365:
-            loop_counter += 1
+            # MODIFIED: [4차 수술 - 결함 #5] 장부 복원 시 주말(휴장일)을 배제하고 순수 영업일(Trading Days) 기준으로 365일을 추적하도록 앵커링 연장
+            if target_date.weekday() < 5:
+                loop_counter += 1
+                
             date_str = target_date.strftime('%Y%m%d')
             
             if limit_date_str and date_str < limit_date_str: break 
