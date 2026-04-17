@@ -1,9 +1,10 @@
 # ==========================================================
-# [telegram_callbacks.py] - 🌟 100% 통합 완성본 🌟 (Part 1)
-# MODIFIED: [V28.12 통이관(SET_INIT) 및 큐 삭제 런타임 에러 팩트 수술]
-# V-REV 자동 물량 이관(SET_INIT) 시 발생하던 _verify_and_update_queue 
-# 데드코드 의존성(AttributeError) 100% 적출. 다이렉트 큐 저장 및 
-# process_auto_sync 강제 격발 파이프라인으로 아키텍처 통일 완료.
+# [telegram_callbacks.py] - 🌟 100% 통합 완성본 🌟 (Full Version)
+# MODIFIED: [V28.14 통이관 및 큐 삭제 런타임 에러 완전 소각]
+# QueueLedger 객체 의존성(AttributeError: 'queues') 전면 철거. 
+# DEL_Q(삭제) 및 SET_INIT(통이관) 격발 시 복잡한 클래스를 거치지 않고 
+# data/queue_ledger.json 파일을 직접 열어 덮어쓰는 순수 다이렉트 
+# 파일 I/O(Direct File I/O) 우회망 완벽 이식 및 CALIB 연동 완료.
 # ==========================================================
 import logging
 import datetime
@@ -152,13 +153,18 @@ class TelegramCallbacks:
                 if action == "DEL_Q":
                     new_q = [item for item in ticker_q if item.get('date') != target_date]
                     
-                    # MODIFIED: [V28.12 런타임 에러 팩트 수술] 데드코드 _verify_and_update_queue 제거 및 다이렉트 처리
-                    if not getattr(self, 'queue_ledger', None):
-                        from queue_ledger import QueueLedger
-                        self.queue_ledger = QueueLedger()
+                    # MODIFIED: 객체 의존성 철거 및 다이렉트 파일 I/O 적용
+                    all_q[ticker] = new_q
+                    os.makedirs(os.path.dirname(q_file), exist_ok=True)
+                    with open(q_file, 'w', encoding='utf-8') as f:
+                        json.dump(all_q, f, ensure_ascii=False, indent=4)
                         
-                    self.queue_ledger.queues[ticker] = new_q
-                    self.queue_ledger._save()
+                    # 메모리 캐시 강제 리로드
+                    if getattr(self, 'queue_ledger', None) and hasattr(self.queue_ledger, '_load'):
+                        try:
+                            self.queue_ledger._load()
+                        except:
+                            pass
                     
                     await query.answer("✅ 지층 삭제 완료. KIS 원장과 동기화합니다.", show_alert=False)
                     
@@ -167,7 +173,7 @@ class TelegramCallbacks:
                     if not self.sync_engine.sync_locks[ticker].locked():
                         await self.sync_engine.process_auto_sync(ticker, query.message.chat_id, context, silent_ledger=True)
                         
-                    final_q = self.queue_ledger.get_queue(ticker)
+                    final_q = self.queue_ledger.get_queue(ticker) if getattr(self, 'queue_ledger', None) else new_q
                     msg, markup = self.view.get_queue_management_menu(ticker, final_q)
                     await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
                     
@@ -184,11 +190,6 @@ class TelegramCallbacks:
                     await query.edit_message_text(prompt, parse_mode='HTML')
             except Exception as e:
                 await query.answer(f"❌ 처리 중 에러 발생: {e}", show_alert=True)
-# ==========================================================
-# [telegram_callbacks.py] - 🌟 100% 통합 완성본 🌟 (Part 2)
-# ==========================================================
-
-# ... (앞선 1부 코드의 EDITQ_ 예외 처리 끝부분에 이어집니다) ...
 
         elif action == "VERSION":
             history_data = self.cfg.get_full_version_history()
@@ -606,14 +607,28 @@ class TelegramCallbacks:
                         "type": "INIT_TRANSFERRED" 
                     }]
                     try:
-                        # MODIFIED: [V28.12 통이관 에러 수술] 데드코드 100% 적출 및 다이렉트 처리 
-                        if not getattr(self, 'queue_ledger', None):
-                            from queue_ledger import QueueLedger
-                            self.queue_ledger = QueueLedger()
+                        # MODIFIED: [V28.14 통이관 에러 완전 소각] 객체 의존성 철거 및 다이렉트 파일 I/O 이식
+                        q_file = "data/queue_ledger.json"
+                        all_q = {}
+                        if os.path.exists(q_file):
+                            try:
+                                with open(q_file, 'r', encoding='utf-8') as f:
+                                    all_q = json.load(f)
+                            except Exception:
+                                pass
+                                
+                        all_q[ticker] = new_q
+                        os.makedirs(os.path.dirname(q_file), exist_ok=True)
+                        with open(q_file, 'w', encoding='utf-8') as f:
+                            json.dump(all_q, f, ensure_ascii=False, indent=4)
                             
-                        self.queue_ledger.queues[ticker] = new_q
-                        self.queue_ledger._save()
-                        
+                        # 메모리 캐시 강제 리로드
+                        if getattr(self, 'queue_ledger', None) and hasattr(self.queue_ledger, '_load'):
+                            try:
+                                self.queue_ledger._load()
+                            except:
+                                pass
+                                
                         await query.edit_message_text(f"✅ <b>[{ticker}] 자동 물량 이관 및 초기화 완료! KIS 원장과 동기화합니다.</b>\n\n<b>{qty}주</b>(평단 <b>${avg:.2f}</b>)의 단일 기초 블록으로 완벽히 재구성되었습니다.", parse_mode='HTML')
                         
                         if ticker not in self.sync_engine.sync_locks:

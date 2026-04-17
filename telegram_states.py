@@ -1,9 +1,9 @@
 # ==========================================================
 # [telegram_states.py] - 🌟 100% 통합 완성본 🌟 (Part 1)
-# MODIFIED: [V28.11 장부 텍스트 수정 런타임 에러 수술]
-# 텍스트로 큐(Queue) 수정 시 발생하던 데드코드(_verify_and_update_queue) 
-# 호출 에러(AttributeError) 전면 적출. 다이렉트 장부 덮어쓰기 후 
-# KIS 실잔고와 비파괴 보정(CALIB)을 강제 격발하는 파이프라인 완벽 이식.
+# MODIFIED: [V28.13 장부 텍스트 수정 런타임 에러 완전 소각]
+# QueueLedger 객체 의존성(AttributeError) 전면 철거. 
+# 복잡한 클래스를 거치지 않고 data/queue_ledger.json 파일을 직접 열어 
+# 덮어쓰는 순수 다이렉트 파일 I/O(Direct File I/O) 우회망 완벽 이식.
 # ==========================================================
 # NEW: [리팩토링 2단계] 유저 텍스트 입력 및 상태 기계(State Machine) 독립 클래스 분리
 import logging
@@ -92,8 +92,11 @@ class TelegramStates:
                 q_file = "data/queue_ledger.json"
                 all_q = {}
                 if os.path.exists(q_file):
-                    with open(q_file, 'r', encoding='utf-8') as f:
-                        all_q = json.load(f)
+                    try:
+                        with open(q_file, 'r', encoding='utf-8') as f:
+                            all_q = json.load(f)
+                    except Exception:
+                        pass
                         
                 ticker_q = all_q.get(ticker, [])
                 for item in ticker_q:
@@ -102,15 +105,21 @@ class TelegramStates:
                         item['price'] = price
                         break
                 
-                # MODIFIED: [V28.11 장부 텍스트 수정 런타임 에러 수술]
-                # 폐기된 _verify_and_update_queue 데드코드 호출을 원천 차단하고,
-                # 다이렉트로 장부에 기록한 뒤 비파괴 보정(CALIB) 엔진을 강제 격발시킴
-                if not getattr(self, 'queue_ledger', None):
-                    from queue_ledger import QueueLedger
-                    self.queue_ledger = QueueLedger()
-                    
-                self.queue_ledger.queues[ticker] = ticker_q
-                self.queue_ledger._save()
+                # MODIFIED: [V28.13 장부 텍스트 수정 런타임 에러 완전 소각]
+                # 객체 의존성(self.queue_ledger.queues)을 100% 영구 적출하고,
+                # 파일 직접 입출력(File I/O)으로 장부를 덮어써서 런타임 붕괴를 원천 차단함.
+                all_q[ticker] = ticker_q
+                
+                os.makedirs(os.path.dirname(q_file), exist_ok=True)
+                with open(q_file, 'w', encoding='utf-8') as f:
+                    json.dump(all_q, f, ensure_ascii=False, indent=4)
+                
+                # 메모리에 떠있는 큐 장부 캐시가 있다면 리로드(동기화) 시도
+                if getattr(self, 'queue_ledger', None) and hasattr(self.queue_ledger, '_load'):
+                    try:
+                        self.queue_ledger._load()
+                    except:
+                        pass
                 
                 del controller.user_states[chat_id]
                 short_date = target_date[:10]
