@@ -1,4 +1,14 @@
-# NEW: [리팩토링 4단계] 순수 라우팅 진입점(Thin Router) 구축 및 의존성 주입(DI) 배선 완료
+# ==========================================================
+# [telegram_bot.py] - 🌟 100% 통합 무결점 완성본 (Full Version) 🌟
+# MODIFIED: [V28.16 지시서(UI) 스냅샷 디커플링 그랜드 수술]
+# 1) V-REV 지시서 렌더링 시 실시간 큐(Queue) 장부 조회를 전면 소각하고, 
+#    17:05 스냅샷(cached_snap)에 박제된 매도 주문(SELL)을 직접 파싱하여 
+#    출력하도록 완벽한 디커플링(Decoupling) 적용. (장중 타점 변동 원천 차단)
+# 2) V14 (오리지널 LOC) 모드 스냅샷 로드 분기 신설.
+# 3) V14-VWAP 모드 스냅샷 수량 Key('initial_qty') 불일치 팩트 교정.
+# 4) [2차 보완] 하드코딩된 '[1층 단독]' 문자열 의존성 100% 소각 및 
+#    유연한 동적 번호 부여(Pop1, Pop2...) 파싱 아키텍처 이식.
+# ==========================================================
 import logging
 import datetime
 import pytz
@@ -31,7 +41,6 @@ class TelegramController:
         self.queue_ledger = queue_ledger
         self.strategy_rev = strategy_rev 
 
-        # MODIFIED: [아키텍처 리팩토링] 하위 도메인 전담 객체 초기화 및 DI(의존성 주입)
         self.sync_engine = TelegramSyncEngine(self.cfg, self.broker, self.strategy, self.queue_ledger, self.view, self.tx_lock, self.sync_locks)
         self.states_handler = TelegramStates(self.cfg, self.broker, self.queue_ledger, self.sync_engine)
         self.callbacks_handler = TelegramCallbacks(self.cfg, self.broker, self.strategy, self.queue_ledger, self.sync_engine, self.view, self.tx_lock)
@@ -119,7 +128,6 @@ class TelegramController:
         application.add_handler(CommandHandler("reset", self.cmd_reset))
         application.add_handler(CommandHandler("update", self.cmd_update))
         
-        # MODIFIED: [라우팅 캡슐화] 분리된 객체로 이벤트 위임
         application.add_handler(CallbackQueryHandler(self.handle_callback))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
@@ -252,7 +260,7 @@ class TelegramController:
         latest_version = self.cfg.get_latest_version() 
         msg = self.view.get_start_message(target_hour, season_icon, latest_version) 
         await update.message.reply_text(msg, parse_mode='HTML')
-        
+
     async def cmd_sync(self, update, context):
         if not self._is_admin(update):
             return
@@ -339,12 +347,19 @@ class TelegramController:
             cached_snap = None
             if ver == "V_REV":
                 cached_snap = self.strategy.v_rev_plugin.load_daily_snapshot(t)
-            elif ver == "V14" and is_manual_vwap:
-                cached_snap = self.strategy.v14_vwap_plugin.load_daily_snapshot(t)
+            elif ver == "V14":
+                if is_manual_vwap:
+                    cached_snap = self.strategy.v14_vwap_plugin.load_daily_snapshot(t)
+                else:
+                    if hasattr(self.strategy, 'v14_plugin'):
+                        cached_snap = self.strategy.v14_plugin.load_daily_snapshot(t)
             
             logic_qty = actual_qty
-            if cached_snap and "total_q" in cached_snap:
-                logic_qty = cached_snap["total_q"]
+            if cached_snap:
+                if "total_q" in cached_snap:
+                    logic_qty = cached_snap["total_q"]
+                elif "initial_qty" in cached_snap:
+                    logic_qty = cached_snap["initial_qty"]
 
             plan = self.strategy.get_plan(
                 t, curr, actual_avg, logic_qty, safe_prev_close, ma_5day=ma_5day,
@@ -388,7 +403,21 @@ class TelegramController:
                 
                 tag = "VWAP" if is_manual_vwap else "LOC"
                 
-                if q_list and logic_qty > 0:
+                # MODIFIED: [맹점 1 수술 2차 보완] 스냅샷 디커플링 (유연한 파싱 도입)
+                # 하드코딩된 '[1층 단독]' 등의 문자열에 의존하지 않고 배열 순서대로 Pop1, Pop2 매핑
+                if cached_snap and "orders" in cached_snap and logic_qty > 0:
+                    sell_idx = 1
+                    for o in cached_snap["orders"]:
+                        if o.get('side') == 'SELL':
+                            v_rev_guidance += f" 🔵 매도{sell_idx}(Pop{sell_idx}) ${o['price']:.2f} <b>{o['qty']}주</b> ({tag})\n"
+                            sell_idx += 1
+                            
+                    if not is_manual_vwap:
+                        target_jackpot = round(actual_avg * 1.01, 2)
+                        v_rev_guidance += f" 🎯 [전체 잭팟] ${target_jackpot:.2f} 돌파 시 <b>{logic_qty}주</b> (옵션)\n"
+                
+                # 스냅샷이 없거나 17:05 KST 이전(0주 새출발 대기 등)인 경우에만 실시간 연산 폴백(Fallback) 가동
+                elif q_list and logic_qty > 0:
                     l1_qty = q_list[-1].get('qty', 0)
                     l1_price = q_list[-1].get('price', safe_prev_close)
                     
@@ -404,9 +433,9 @@ class TelegramController:
                         target_upper = round(upper_avg * 1.005, 2)
                         v_rev_guidance += f" 🔵 매도2(Pop2) ${target_upper:.2f} <b>{upper_qty}주</b> ({tag})\n"
                         
+                    if not is_manual_vwap:
                         target_jackpot = round(actual_avg * 1.01, 2)
-                        if not is_manual_vwap:
-                            v_rev_guidance += f" 🎯 [전체 잭팟] ${target_jackpot:.2f} 돌파 시 <b>{logic_qty}주</b> (옵션)\n"
+                        v_rev_guidance += f" 🎯 [전체 잭팟] ${target_jackpot:.2f} 돌파 시 <b>{logic_qty}주</b> (옵션)\n"
                 else:
                     v_rev_guidance += " 🔵 매도: 대기 물량 없음 (관망)\n"
                 
