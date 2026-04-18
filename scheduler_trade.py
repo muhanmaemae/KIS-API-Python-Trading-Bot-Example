@@ -3,8 +3,10 @@
 # MODIFIED: [V28.18 V14 오리지널 스냅샷 저장 배선 개통]
 # 1) 17:05 정규장 스케줄러(scheduled_regular_trade) 내 V14 모드 분기에서
 #    새로 이식된 v14_plugin.save_daily_snapshot() 함수를 호출하도록 배선 추가.
-# 2) 애프터마켓 스케줄러(scheduled_after_market_lottery)의 스냅샷 소각 로직에
-#    V14 오리지널 스냅샷 파일(daily_snapshot_V14_*.json)도 함께 정리되도록 클린업 확장.
+# NEW: [V28.21 스냅샷 소각 맹점 적출 및 디커플링 무결성 확보]
+# 애프터마켓 스케줄러(16:05 EST) 내부의 스냅샷 강제 삭제(os.remove) 로직을 전면 영구 적출.
+# 0주 새출발 당일 매수 성공 후 /sync 조회 시 매도 가이던스가 노출되는 UI 오염 버그를
+# 스냅샷 영구 보존(익일 17:05 원자적 덮어쓰기)으로 완벽히 차단함.
 # ==========================================================
 import os
 import logging
@@ -758,8 +760,6 @@ async def scheduled_regular_trade(context):
                     continue
                 
                 # MODIFIED: [V28.18 V14 오리지널 스냅샷 저장 배선 개통]
-                # 17:05 정규장 스케줄러가 순수 V14 모드일 때도 스냅샷을 파일에 강제로 박제(Lock-on)하여 
-                # 장중 타점 변동(공수 붕괴) 엣지 케이스 원천 차단
                 ma_5day = float(await asyncio.to_thread(broker.get_5day_ma, t) or 0.0)
                 plan = strategy.get_plan(t, curr_p, safe_avg, safe_qty, prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash.get(t, 0.0), is_snapshot_mode=True)
                 
@@ -891,19 +891,14 @@ async def scheduled_after_market_lottery(context):
 
                     await asyncio.sleep(0.2)
                     
-            try:
-                for t in cfg.get_active_tickers():
-                    # MODIFIED: [V28.18 클린업 확장] 애프터마켓 종료 시 V14 오리지널 스냅샷도 함께 청소하도록 패턴 추가
-                    for prefix in ["REV", "V14VWAP", "V14"]:
-                        for f in glob.glob(f"data/daily_snapshot_{prefix}_*_{t}.json"):
-                            try: os.remove(f)
-                            except: pass
-                logging.info("🧹 [스냅샷 초기화] 익일 새로운 작전 수립을 위해 당일 지시서 스냅샷 파일을 모두 소각했습니다.")
-            except Exception as e:
-                logging.error(f"🚨 스냅샷 파일 초기화 실패: {e}")
+            # NEW: [V28.21 스냅샷 소각 맹점 적출 및 디커플링 무결성 확보]
+            # 로터리 덫에서 스냅샷(daily_snapshot_*.json)을 강제 소각하던 파괴적 코드를 전면 철거함.
+            # 이로써 0주 새출발 매수 성공 직후 UI에 매도 가이던스가 노출되던 디커플링 붕괴를 원천 차단함.
+            pass
 
     try:
         await asyncio.wait_for(_do_lottery(), timeout=60.0)
     except Exception as e:
         logging.error(f"🚨 애프터마켓 로터리 덫 에러: {e}")
         await context.bot.send_message(chat_id=chat_id, text=f"🚨 <b>애프터마켓 로터리 덫 치명적 에러 발생!</b>\n▫️ 상세 내역: {e}", parse_mode='HTML')
+
