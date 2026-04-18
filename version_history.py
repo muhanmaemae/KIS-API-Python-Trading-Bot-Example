@@ -234,5 +234,6 @@ VERSION_HISTORY = [
     "V28.15 [2026.04.18] 🚨 [모드 스위칭 0주 락온 및 물량 통이관 그랜드 수술]: 거대 프랑켄슈타인 1층(2700달러 손실) 생성 원흉인 '물량 통이관(SET_INIT)' 콜백 라우터 영구 소각. V14 오리지널과 V-REV 역추세 모드 전환 시 KIS 실잔고를 스캔하여 단 1주라도 보유 중일 경우 전환을 강제 차단하는 '0주 락온(Lock-on)' 절대 방어막 완벽 이식 (수정: telegram_callbacks)",
     "V28.16 [2026.04.18] 🚨 [UX 팩트 패치]: 0주 락온 발동 시 일회성 팝업(Alert) 무반응 맹점을 해체하고 옵션 A(직관성 최우선) 텍스트로 기존 화면을 덮어써서 영구 박제하는 렌더링 수술 완료 (수정: telegram_callbacks)",
     "V28.18 [2026.04.18] 🚨 [UX 팩트 패치]: 0주 락온 시 자기 자신의 모드(동일 모드) 서브메뉴(LOC/VWAP, AUTO/MANUAL) 진입까지 과잉 차단되던 엣지 케이스 완벽 해체 및 조건부 허용 렌더링 수술 완료 (수정: telegram_callbacks)",
-    "V28.19 [2026.04.18] 🚨 [그랜드 수술]: KIS API 가짜 0주(Phantom 0-Share) 응답 맹점 원천 차단. holdings None Safe-Casting 쉴드 이식 및 V14 장부 + V-REV 큐 다이렉트 I/O를 결합한 삼중 교차 검증(Triple Verification) 방어막 최종 탑재 완료 (수정: telegram_callbacks)"
+    "V28.19 [2026.04.18] 🚨 [그랜드 수술]: KIS API 가짜 0주(Phantom 0-Share) 응답 맹점 원천 차단. holdings None Safe-Casting 쉴드 이식 및 V14 장부 + V-REV 큐 다이렉트 I/O를 결합한 삼중 교차 검증(Triple Verification) 방어막 최종 탑재 완료 (수정: telegram_callbacks)",
+    "V28.20 [2026.04.18] 🚨 [디스크 I/O 병목 및 inode 누수 방어 스케줄러 이식]: 매일 날짜가 갱신되며 생성되는 스냅샷(`daily_snapshot_*`) 및 상태 캐시(`vwap_state_*`) 텍스트 파일들이 무한 누적되어 구글 클라우드 서버에 부하를 유발하는 잠재적 리스크를 원천 차단. 당일 생성된 파일은 보존하되, 생명 주기가 완전히 끝난 7일 이전의 찌꺼기 파일들만 핀셋으로 자동 소각(os.remove)하는 무결점 자정 청소(Self-Cleaning) 로직 탑재 완료 (수정: scheduler_core)"
 ]
