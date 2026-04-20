@@ -12,6 +12,10 @@
 # MODIFIED: [V28.28 yfinance 버전 호환 및 타임아웃 방어]
 # 최신 yfinance 라이브러리가 액면분할 날짜 키를 문자열(str)로 반환 시 
 # 발생하는 strftime 에러를 Timestamp 강제 변환 및 슬라이싱으로 완벽히 교정.
+# MODIFIED: [V28.34 17시 잔고 스캔 API 크래시 완벽 방어 및 타입 세이프 쉴드 이식]
+# KIS API가 0주 상태이거나 서버 응답 변동 시 output2를 빈 리스트([])로 반환하여
+# AttributeError 런타임 붕괴를 유발하던 치명적 맹점을 isinstance 기반의 
+# 타입 락온(Lock-on) 방어막으로 원천 차단 완료.
 # ==========================================================
 
 import requests
@@ -208,7 +212,10 @@ class KoreaInvestmentBroker:
         if res.get('rt_cd') == '0':
             api_success = True
             o2 = res.get('output2', {})
-            if isinstance(o2, list) and len(o2) > 0: o2 = o2[0]
+            
+            # NEW: [V28.34 타입 세이프 쉴드 이식] 빈 리스트 반환 시 딕셔너리로 치환하여 AttributeError 원천 차단
+            if isinstance(o2, list):
+                o2 = o2[0] if len(o2) > 0 else {}
             
             dncl_amt = self._safe_float(o2.get('frcr_dncl_amt_2', 0))       
             sll_amt = self._safe_float(o2.get('frcr_sll_amt_smtl', 0))      
@@ -227,7 +234,9 @@ class KoreaInvestmentBroker:
                 api_success = True
                 if cash <= 0:
                     o2 = res_hold.get('output2', {})
-                    if isinstance(o2, list) and len(o2) > 0: o2 = o2[0]
+                    # NEW: [V28.34 타입 세이프 쉴드 이식] 빈 리스트 반환 시 딕셔너리로 치환
+                    if isinstance(o2, list):
+                        o2 = o2[0] if len(o2) > 0 else {}
                     new_cash = self._safe_float(o2.get('ovrs_ord_psbl_amt', 0))
                     if new_cash > cash: cash = new_cash
                 
