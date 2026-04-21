@@ -546,7 +546,23 @@ async def scheduled_vwap_trade(context):
                                                     
                                             if ccld_qty > 0:
                                                 strategy_rev.record_execution(t, "SELL", ccld_qty, exec_price)
+                                                # MODIFIED: [V28.37 pending_grad 마커] pop_lots 전 큐 스냅샷 보존
+                                                q_snap_before_pop = list(q_data)
                                                 queue_ledger.pop_lots(t, ccld_qty)
+                                                remaining_after_pop = queue_ledger.get_queue(t)
+                                                remaining_qty_after = sum(item.get('qty', 0) for item in remaining_after_pop)
+                                                if remaining_qty_after == 0 and total_q > 0:
+                                                    try:
+                                                        pending_file = f"data/pending_grad_{t}.json"
+                                                        pending_data = {
+                                                            "q_data_before": q_snap_before_pop,
+                                                            "exec_price": exec_price,
+                                                            "total_q": total_q
+                                                        }
+                                                        with open(pending_file, 'w', encoding='utf-8') as _pf:
+                                                            json.dump(pending_data, _pf)
+                                                    except Exception as pg_e:
+                                                        logging.error(f"🚨 [{t}] pending_grad 마커 파일 저장 실패: {pg_e}")
                                     else:
                                         if not vwap_cache.get(f"REV_{t}_sweep_skip_msg"):
                                             msg = f"⚠️ <b>[{t}] 스윕 피니셔 덤핑 생략 (MOC 락다운 감지)</b>\n▫️ 조건이 달성되었으나, 대상 물량이 수동 긴급 수혈(MOC) 등 취소 불가 상태로 미국 거래소에 묶여 있어 스윕 덤핑을 자동 스킵합니다."
@@ -881,6 +897,8 @@ async def scheduled_regular_trade(context):
                         if is_success and o['side'] == 'SELL':
                             sell_success_count += 1
                             
+                        # MODIFIED: [V28.38 f-string 런타임 붕괴 방어막] 
+                        # 파이썬 3.12 이하 f-string 따옴표 겹침 및 백슬래시 문법 에러 원천 차단
                         err_msg = res.get('msg1', '오류')
                         status_icon = '✅' if is_success else f'❌({err_msg})'
                         msgs[t] += f"└ {o['desc']} {o['qty']}주 (${o['price']}): {status_icon}\n"
@@ -925,7 +943,11 @@ async def scheduled_regular_trade(context):
                 for o in target_orders:
                     res = broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
                     if res.get('rt_cd') != '0': all_success_map[t] = False
-                    msgs[t] += f"└ 1차 필수: {o['desc']} {o['qty']}주: {'✅' if res.get('rt_cd')=='0' else f'❌({res.get('msg1')})'}\n"
+                    
+                    # MODIFIED: [V28.38 f-string 런타임 붕괴 방어막]
+                    err_msg = res.get('msg1', '오류')
+                    status_icon = '✅' if res.get('rt_cd') == '0' else f'❌({err_msg})'
+                    msgs[t] += f"└ 1차 필수: {o['desc']} {o['qty']}주: {status_icon}\n"
                     await asyncio.sleep(0.2) 
 
             for t in sorted_tickers:
