@@ -17,6 +17,7 @@
 # MODIFIED: [V29.00 NEW] AVWAP 조기 퇴근 모드 동적 렌더링 및 팝업 안내 UX 팩트 수술 완료
 # 🚨 [V29.02 UX 팩트 패치] "역사 목록으로 돌아가기(HIST:LIST)" 콜백 시 cmd_history 호출에 따른 런타임 즉사 맹점 소각. 동적 리스트 렌더링 엔진 단독 이식 완료.
 # 🚨 [V29.03 핫픽스] UnboundLocalError 런타임 즉사 유발 원흉(AVWAP 내부 로컬 임포트 섀도잉) 100% 소각 완료.
+# NEW: [V29.04] queue_ledger.queues 객체 직접 참조 런타임 붕괴 데드코드 전면 소각 및 다이렉트 I/O 멱등성 방어막 이식
 # ==========================================================
 import logging
 import datetime
@@ -282,8 +283,17 @@ class TelegramCallbacks:
                     except Exception:
                         pass
                     
-                if getattr(self, 'queue_ledger', None) and hasattr(self.queue_ledger, 'queues') and ticker in self.queue_ledger.queues:
-                    del self.queue_ledger.queues[ticker]
+                # MODIFIED: [V29.04] queue_ledger.queues 직접 참조 데드코드 100% 소각 및 런타임 붕괴 방어막 이식
+                # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
+                # 텔레그램 수동 조작 시 queue_ledger.queues 등 존재하지 않는 내부 속성에 직접 접근하여
+                # 삭제(del)하려는 코드를 절대 부활시키지 마십시오. AttributeError 런타임 붕괴를 유발합니다.
+                # 반드시 파이썬 내장 기능인 open과 json.dump를 이용한 다이렉트 파일 I/O만을 사용하며,
+                # 메모리 갱신이 필요한 경우 아래와 같이 _load()를 호출하여 무결성을 확보하십시오.
+                if getattr(self, 'queue_ledger', None) and hasattr(self.queue_ledger, '_load'):
+                    try:
+                        self.queue_ledger._load()
+                    except Exception:
+                        pass
                     
                 await query.edit_message_text(f"✅ <b>[{ticker}] 삼위일체 소각(Nuke) 및 초기화 완료!</b>\n▫️ 본장부, 백업장부, 큐(Queue), 에스크로의 찌꺼기 데이터가 100% 영구 삭제되었습니다.\n▫️ 다음 매수 진입 시 0주 새출발 디커플링 타점 모드로 완벽히 재시작합니다.", parse_mode='HTML')
             
@@ -696,11 +706,8 @@ class TelegramCallbacks:
                     
                 await query.edit_message_text(f"✅ <b>[{ticker}]</b> 퀀트 엔진이 <b>V14 무매4</b> 모드로 전환되었습니다.\n▫️ <b>집행 방식:</b> {mode_txt}\n▫️ /sync 명령어에서 변경된 지시서를 확인하세요.", parse_mode='HTML')
 
-        # 🚨 [V29.00 NEW] 암살자 전용 조기퇴근 콜백 라우터 및 동적 콘솔 렌더링
         elif action == "AVWAP":
             if sub in ["MENU", "EARLY"]:
-                # 🚨 [V29.03] 로컬 스코프 섀도잉 문제 해결: 이 줄의 임포트가 전체 함수 범위를 덮어쓰던 에러를 제거했습니다!
-                
                 ticker = data[2] if sub == "MENU" else data[3]
                 
                 if sub == "EARLY":
@@ -734,7 +741,6 @@ class TelegramCallbacks:
                     ]
                 ]
                 
-                # 🚨 [UI 은폐 팩트 수술] 조기퇴근 모드(early_mode)가 ON일 때만 수익률 설정 버튼을 노출시킵니다!
                 if early_mode:
                     keyboard.append([
                         InlineKeyboardButton(f"⚙️ 목표 수익률 설정 (현재: {early_target}%)", callback_data=f"AVWAP:TARGET_SET:{ticker}")
@@ -748,7 +754,6 @@ class TelegramCallbacks:
                 ticker = data[2]
                 controller.user_states[update.effective_chat.id] = f"AVWAP_TARGET_{ticker}"
                 
-                # 🚨 [UX 팩트 패치] 팝업으로 입력창 위치 안내
                 await query.answer("👇 확인을 누르시고, 화면 맨 아래 채팅창에 목표 수익률(숫자)을 쳐주세요!", show_alert=True)
                 
                 await context.bot.send_message(

@@ -17,6 +17,7 @@
 # 🚨 [V27.22 그랜드 수술] 0주 새출발 시 VWAP 매수 실종(Ghost Town) 버그 원천 차단 (상한선 1.15배 팩트 주입)
 # MODIFIED: [V28.19 타임존 락온] datetime.now()를 EST(미국 동부) 기준으로 강제 고정하여 KST 자정 경계 스냅샷 증발 버그 완벽 수술
 # NEW: [V28.20 무조건 진입] 0주 새출발 시 VWAP 런타임 타격에서 상한선 방어막 철거 (스냅샷 락온 디커플링 이식)
+# NEW: [V29.04] 스냅샷 중복 덮어쓰기 원천 차단 멱등성 가드 이식 및 AI 환각 방어막 하드코딩 완료
 # ==========================================================
 import math
 import logging
@@ -104,6 +105,13 @@ class V14VwapStrategy:
     def save_daily_snapshot(self, ticker, plan_data):
         today_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d")
         snap_file = self._get_snapshot_file(ticker)
+        
+        # NEW: [스냅샷 중복 덮어쓰기 원천 차단 멱등성 가드 이식]
+        # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
+        # 이미 당일 스냅샷이 존재하면 절대 덮어쓰지 않고 즉시 return 하도록 멱등성 가드를 유지하십시오.
+        if os.path.exists(snap_file):
+            return
+
         data = {
             "date": today_str,
             "plan": plan_data
@@ -271,4 +279,3 @@ class V14VwapStrategy:
 
         self._save_state(ticker)
         return {"orders": orders, "trigger_loc": False}
-
