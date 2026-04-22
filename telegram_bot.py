@@ -20,6 +20,7 @@
 # 🚨 [V28.50 NEW] AVWAP 암살자 전용 '조기퇴근/타겟설정' 독립 UI 라우터 개통
 # 🚨 [V29.04 MODIFIED] UI 렌더링 파편화 수술: /history 명령어(cmd_history)의 구형 출력을 최신형 콜백 UI(HIST:LIST)와 100% 동일하게 통일화 완료.
 # 🚨 [V29.05 핵심 수술] 평단가 하방 오염 디커플링: V-REV 지시서(가이던스) 연산 시 한투 평단가(actual_avg) 개입을 영구 차단하고, 큐(Queue) 지층 기반 순수 역산 로직 100% 이식 완료.
+# 🚨 [V29.08 팩트 교정] 장마감(CLOSE) 현재가 출력 수술: 애프터마켓 종료 후에는 실시간 가격($100.25) 대신 '정규장 종가($98.09)'를 현재가(curr)로 강제 고정하여 HTS와 100% 동기화 완료.
 # ==========================================================
 import logging
 import datetime
@@ -396,6 +397,7 @@ class TelegramController:
             
             safe_prev_close = prev_close if prev_close else 0.0
             
+            # 야후 파이낸스 정규장 종가 스캔
             if status_code in ["AFTER", "CLOSE", "PRE"]:
                 try:
                     def get_yf_close():
@@ -406,6 +408,11 @@ class TelegramController:
                         safe_prev_close = yf_close
                 except Exception as e:
                     logging.debug(f"YF 정규장 종가 롤오버 스캔 실패 ({t}): {e}")
+
+            # 🟢 [V29.08 팩트 교정] 장마감(CLOSE) 상태일 경우, 
+            # 애프터마켓 변동 가격을 무시하고 정규장 종가를 현재가로 강제 치환
+            if status_code == "CLOSE":
+                curr = safe_prev_close
 
             idx_ticker = "SOXX" if t == "SOXL" else "QQQ"
             dynamic_pct_obj = await asyncio.to_thread(self.broker.get_dynamic_sniper_target, idx_ticker)
@@ -481,8 +488,6 @@ class TelegramController:
                 
                 # ==========================================================
                 # 🚨 [V29.05 핵심 수술] V-REV 매도가 가이던스(지시서) 100% 디커플링 이식
-                # KIS 평단가(actual_avg) 접근을 영구 차단하고, 
-                # 오직 큐(q_list)의 [수량 * 가격] 역산 결과만 사용하여 안전 타점을 산출함!
                 # ==========================================================
                 if cached_snap and "orders" in cached_snap and v_rev_q_qty > 0:
                     sell_idx = 1
@@ -492,7 +497,6 @@ class TelegramController:
                             sell_idx += 1
                             
                     if not is_manual_vwap:
-                        # 잭팟 타점 역시 스냅샷 평균가 우선, 없으면 큐(Queue) 순수 평균가 사용
                         if 'avg_price' in cached_snap:
                             snap_avg = cached_snap['avg_price']
                         else:
@@ -645,7 +649,6 @@ class TelegramController:
             await update.message.reply_text("📭 <b>명예의 전당 (졸업 기록)이 비어있습니다.</b>", parse_mode='HTML')
             return
             
-        # 최신순(end_date 기준 내림차순) 정렬
         sorted_hist = sorted(history_data, key=lambda x: x.get('end_date', ''), reverse=True)
         
         msg = "🏆 <b>[ 명예의 전당 (과거 졸업 기록) ]</b>\n\n"
@@ -653,7 +656,6 @@ class TelegramController:
         
         keyboard = []
         
-        # 최근 기록 최대 15개 버튼 동적 생성
         for h in sorted_hist[:15]: 
             t = h.get('ticker', 'UNK')
             p = h.get('profit', 0.0)
