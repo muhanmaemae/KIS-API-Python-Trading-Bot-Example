@@ -14,7 +14,8 @@
 # MODIFIED: [V28.27] 수동 매도로 인한 0주 락온 디커플링 상태 감지 및 /reset 유도 방어막 추가
 # MODIFIED: [V28.32] 코파일럿 아키텍처 채택: V14 전용 상방 스나이퍼 로직 충돌 방지를 위한 V-REV 락다운 방어막 원상 복구
 # MODIFIED: [V28.33] TQQQ 등 타 종목의 V-REV 횡단 진입 맹점 100% 소각 (SOXL 하드웨어 락온 이식)
-# 🚨 [V29.00 NEW] AVWAP 조기 퇴근 모드 동적 렌더링 및 팝업 안내 UX 팩트 수술 완료
+# MODIFIED: [V29.00 NEW] AVWAP 조기 퇴근 모드 동적 렌더링 및 팝업 안내 UX 팩트 수술 완료
+# 🚨 [V29.02 UX 팩트 패치] "역사 목록으로 돌아가기(HIST:LIST)" 콜백 시 cmd_history 호출에 따른 런타임 즉사 맹점 소각. 동적 리스트 렌더링 엔진(edit_message_text) 단독 이식 완료.
 # ==========================================================
 import logging
 import datetime
@@ -307,6 +308,9 @@ class TelegramCallbacks:
                             _, holdings = self.broker.get_account_balance()
                         await self.sync_engine._display_ledger(ticker, update.effective_chat.id, context, message_obj=query.message, pre_fetched_holdings=holdings)
 
+        # ==========================================================
+        # 🚨 [V29.02 핵심 수술] HIST:LIST 콜백 런타임 즉사 방어막 이식
+        # ==========================================================
         elif action == "HIST":
             if sub == "VIEW":
                 hid = int(data[2])
@@ -327,8 +331,39 @@ class TelegramCallbacks:
                         msg, markup = self.view.create_ledger_dashboard(target['ticker'], qty, avg, invested, sold, safe_trades, 0, 0, is_history=True)
                         
                     await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
+            
+            # 🟢 [수술 완료] 엉뚱한 컨트롤러 호출 걷어내고, 현재 텍스트 창을 리스트로 예쁘게 동적 렌더링!
             elif sub == "LIST":
-                await controller.cmd_history(update, context)
+                try:
+                    history_data = self.cfg.get_history()
+                except Exception:
+                    history_data = []
+                    
+                if not history_data:
+                    await query.edit_message_text("📭 <b>명예의 전당 (졸업 기록)이 비어있습니다.</b>", parse_mode='HTML')
+                    return
+                
+                # 최신순(end_date 기준 내림차순) 정렬
+                sorted_hist = sorted(history_data, key=lambda x: x.get('end_date', ''), reverse=True)
+                
+                msg = "🏆 <b>[ 명예의 전당 (과거 졸업 기록) ]</b>\n\n"
+                msg += "상세 내역을 조회할 기록을 선택하세요.\n"
+                keyboard = []
+                
+                # 최근 기록 최대 15개 버튼 동적 생성
+                for h in sorted_hist[:15]: 
+                    t = h.get('ticker', 'UNK')
+                    p = h.get('profit', 0.0)
+                    date_str = h.get('end_date', '')[:10].replace("-", ".")
+                    sign = "+" if p >= 0 else "-"
+                    
+                    btn_text = f"🏅 {date_str} [{t}] {sign}${abs(p):.2f}"
+                    keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"HIST:VIEW:{h['id']}")])
+                    
+                keyboard.append([InlineKeyboardButton("❌ 닫기", callback_data="RESET:CANCEL")])
+                
+                await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+
             elif sub == "IMG":
                 ticker = data[2]
                 
