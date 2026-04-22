@@ -1,5 +1,5 @@
 # ==========================================================
-# [strategy_reversion.py] - 🌟 V28.44 0주 새출발 무결점 수술본 🌟
+# [strategy_reversion.py] - 🌟 V29.07 0주 새출발 90% 스킵 무결점 수술본 🌟
 # ⚠️ V-REV 하이브리드 엔진 전용 수학적 타격 모듈
 # 💡 5년 백테스트 기반 VWAP 유동성 정밀 가중치(U_CURVE_WEIGHTS) 적용 완료
 # 💡 [V24.16 팩트 동기화] 0주 새출발 디커플링 타점 (Buy1: 0.999, Buy2: /0.935) 원본 유지
@@ -25,6 +25,7 @@
 # MODIFIED: [V28.43] 0주 새출발 예산 분리 팩트 체크 및 안심 주석 하드코딩 (Buy1: 무제한 50% 20주 / Buy2: 조건부 50% 21주 락온)
 # MODIFIED: [V28.44] 0주 새출발 Buy1 상한제 완전 철거 (50% 예산 20주 무조건 매수 락온 및 타점 붕괴 영구 방어)
 # 🚨 [V29.06 팩트 증명] 한투 평단가 하방 오염 100% 영구 차단 검증. 본 엔진은 외부 평단가(actual_avg) 개입을 일절 불허하며 오직 큐(q_data) 기반 순수 역산 평단가만 사용함이 검증됨.
+# MODIFIED: [V29.07] 0주 새출발 VWAP 타점 붕괴 및 호가 스프레드(Ask) 스킵 맹점 100% 영구 차단 (스냅샷 앵커 복원)
 # ==========================================================
 import math
 import os
@@ -43,7 +44,7 @@ class ReversionStrategy:
         self.state_loaded = {}
         self.was_holding = {}
         
-        # MODIFIED: [V28.44] 가중치 배열 합산 1.0 멱등성 동기화 완결
+        # MODIFIED: [V28.42] 가중치 배열 합산 1.0 멱등성 동기화 완결
         self.U_CURVE_WEIGHTS = [
             0.0308, 0.0220, 0.0190, 0.0228, 0.0179, 0.0191, 0.0199, 0.0190, 0.0187, 0.0213,
             0.0216, 0.0234, 0.0231, 0.0210, 0.0205, 0.0252, 0.0225, 0.0228, 0.0238, 0.0229,
@@ -183,7 +184,6 @@ class ReversionStrategy:
 
         self._load_state_if_needed(ticker)
 
-        # 🛡️ [순도 100% 디커플링 연산] 한투 평단가는 절대 개입할 수 없음
         valid_q_data = [item for item in q_data if float(item.get('price', 0.0)) > 0]
         total_q = sum(int(item.get("qty", 0)) for item in valid_q_data)
         total_inv = sum(float(item.get('qty', 0)) * float(item.get('price', 0.0)) for item in valid_q_data)
@@ -328,14 +328,16 @@ class ReversionStrategy:
             # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
             # V14 무매 원칙상 고점 불타기를 막기 위해, 장 마감 직전이라도 별값 상한선을 초과하면 
             # 잔여 예산을 강제 배포하지 않고 소각하는 것이 100% 정상 작동임. 우회 매수 피니셔 절대 추가 금지.
-            # 🛡️ MODIFIED: [V28.44] Buy1: 0주 새출발 세션 시 조건 완전 해제 (무조건 진입) -> 약 20주 100% 매수 락온
+            # 🛡️ MODIFIED: [V29.07] Buy1: 0주 새출발 세션 시 조건 완전 해제 (무조건 진입) 및 호가 스프레드(Ask) 통과 락온
             if curr_p > 0 and (is_zero_start_session or curr_p <= p1_trigger):
                 exact_q1 = (b1_budget_slice / curr_p) + float(self.residual["BUY1"].get(ticker, 0.0))
                 alloc_q1 = int(math.floor(exact_q1))
                 self.residual["BUY1"][ticker] = float(exact_q1 - alloc_q1)
                 if alloc_q1 > 0:
-                    # 0주 세션이면 실시간 1호가로 정밀 타격 (타점 붕괴 차단 완료)
-                    orders.append({"side": "BUY", "qty": alloc_q1, "price": p1_trigger if not is_zero_start_session else curr_p})
+                    # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
+                    # VWAP 0주 새출발 시 타점을 curr_p로 제한하면 매수호가(ask) 스프레드에 의해 90% 이상 주문이 Skip되는 치명적 맹점이 발생함.
+                    # 절대 p1_trigger(스냅샷 앵커)를 훼손하거나 curr_p로 롤백하지 말 것.
+                    orders.append({"side": "BUY", "qty": alloc_q1, "price": p1_trigger})
                     
             # 🛡️ MODIFIED: [V28.44] Buy2: 엄격한 상한선 방어 유지 (조건부 진입) -> 비싸면 0주 매수 락온
             if curr_p > 0 and curr_p <= p2_trigger:
