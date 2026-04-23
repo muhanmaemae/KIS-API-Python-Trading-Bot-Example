@@ -33,6 +33,7 @@
 # 🚨 [V29.00 NEW] AVWAP 암살자 조기퇴근 제어 콘솔 진입 버튼 및 실시간 상태 텍스트 렌더링 파이프라인 이식 완료
 # 🚨 [V29.01 MODIFIED] GIF 화질 저하 팩트 진단: 애니메이션 병합 로직 100% 소각 및 background.png 기반 무손실 고화질(Quality 100) PNG 렌더링 엔진 원상 복구 완료
 # 🚨 [V29.07 UX 팩트 패치] AVWAP 암살자 제어 콘솔 진입 버튼 텍스트 통일화 (직관성 강화)
+# MODIFIED: [V29.09] 0주 팩트 스캔 시 낡은 스냅샷의 렌더링 디커플링 누수를 원천 차단하는 동적 오버라이드(Overwrite) 락온 이식
 # ==========================================================
 import os
 import math
@@ -232,7 +233,7 @@ class TelegramView:
         msg += "⚠️ <b>[ 파괴적 제약 사항 ]</b>\n"
         msg += "1. 기존 V14의 상방 스나이퍼 기능은 즉시 영구 셧다운됩니다.\n"
         msg += "2. 당일 -1% 하드스탑(손절) 또는 +1% 스퀴즈(익절) 또는 15:55 타임스탑 강제 덤핑이 적용됩니다.\n"
-        msg += "3. V-REV 큐(Queue)와는 물량과 평단가가 100% 분리되어 시스템 메모 단독으로 연산됩니다.\n\n"
+        msg += "3. V-REV 큐(Queue)와는 물량과 평단가가 100% 분리되어 시스템 메모리 단독으로 연산됩니다.\n\n"
         msg += "포트폴리오 매니저의 최종 승인을 대기합니다."
         
         keyboard = [
@@ -321,6 +322,25 @@ class TelegramView:
             
             is_manual_vwap = t_info.get('is_manual_vwap', False)
             is_zero_start = t_info.get('is_zero_start', False)
+            
+            # 🚨 [V29.09 수술] 팩트 실잔고(qty) 0주 스캔 시 렌더링 디커플링 발동
+            fact_qty = t_info.get('qty', 0)
+            if fact_qty == 0 and not is_zero_start:
+                is_zero_start = True
+                if 'plan' in t_info and 'orders' in t_info['plan']:
+                    # 과거 보유 스냅샷 타점(0.995 / 0.9725) 팩트 무효화 및 새출발 타점 덮어쓰기
+                    t_info['plan']['orders'] = []
+                    half_budget = (t_info.get('seed', 0.0) * 0.15) * 0.5
+                    prev_c = t_info.get('prev_close', 0.0)
+                    if prev_c > 0:
+                        p1_trigger_fact = round(prev_c / 0.935, 2)
+                        p2_trigger_fact = round(prev_c * 0.999, 2)
+                        q1 = math.floor(half_budget / p1_trigger_fact)
+                        q2 = math.floor(half_budget / p2_trigger_fact)
+                        if q1 > 0:
+                            t_info['plan']['orders'].append({"side": "BUY", "qty": q1, "price": p1_trigger_fact, "type": "LOC", "desc": "예방적 매수(Buy1)"})
+                        if q2 > 0:
+                            t_info['plan']['orders'].append({"side": "BUY", "qty": q2, "price": p2_trigger_fact, "type": "LOC", "desc": "예방적 매수(Buy2)"})
             
             if t_info.get('t_val', 0.0) > (t_info.get('split', 40.0) * 1.1):
                 body_msg += "⚠️ <b>[🚨 시스템 긴급 경고: 비정상 T값 폭주 감지!]</b>\n"
@@ -502,7 +522,6 @@ class TelegramView:
             
         return final_msg, InlineKeyboardMarkup(keyboard) if keyboard else None
 
-    # 🚨 [V29.00 NEW] 조기퇴근 실시간 텍스트 및 전용 콘솔 버튼 렌더링 
     def get_settlement_message(self, active_tickers, config, atr_data, dynamic_target_data=None):
         msg = "⚙️ <b>[ 현재 설정 및 복리 상태 ]</b>\n\n"
         keyboard = []
@@ -572,7 +591,6 @@ class TelegramView:
                 keyboard.append([InlineKeyboardButton(avwap_txt, callback_data=avwap_cb)])
                 
                 if is_avwap and t == "SOXL":
-                    # 🟢 팩트 패치 완료: 콘솔 타이틀과 버튼 텍스트를 직관적으로 100% 통일!
                     keyboard.append([InlineKeyboardButton(f"🔫 {t} AVWAP 암살자 제어 콘솔", callback_data=f"AVWAP:MENU:{t}")])
             
             if ver == "V_REV":
@@ -706,7 +724,6 @@ class TelegramView:
 
         return msg, InlineKeyboardMarkup(keyboard)
 
-    # 🚨 V29.01 MODIFIED: GIF Fallback 제거 및 고화질 PNG 렌더링 원복
     def create_profit_image(self, ticker, profit, yield_pct, invested, revenue, end_date):
         W, H = 600, 920 
         IMG_H = 430 
@@ -755,7 +772,6 @@ class TelegramView:
                 bg_res = bg_frame.resize((W, new_h), Image.Resampling.LANCZOS)
                 return bg_res.crop((0, (new_h - IMG_H) // 2, W, (new_h + IMG_H) // 2))
 
-        # 🟢 [수정 완료: GIF 로직 100% 소각, 고화질 정지화면 PNG 강제 렌더링]
         img = Image.new('RGB', (W, H), color='#1E222D')
         try:
             if os.path.exists("background.png"):
