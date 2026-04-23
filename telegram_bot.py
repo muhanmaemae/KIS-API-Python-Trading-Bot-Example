@@ -23,11 +23,10 @@
 # 🚨 [V29.08 팩트 교정] 장마감(CLOSE) 현재가 출력 수술: 애프터마켓 종료 후에는 실시간 가격($100.25) 대신 '정규장 종가($98.09)'를 현재가(curr)로 강제 고정하여 HTS와 100% 동기화 완료.
 # 🚨 [V29.10 팩트 교정] V-REV 0주 새출발 렌더링 시 스냅샷 수량(logic_qty) 의존성 전면 소각 및 실잔고(v_rev_q_qty) 기반 100% 디커플링 완성 (타점 오염 및 줍줍 렌더링 버그 영구 차단)
 # 🚨 [V30.01 팩트 수술] AVWAP 암살자 실시간 레이더(Radar) 시각화 엔진의 혈관(Sync Engine) 개통
-# 🚨 [V30.02 팩트 교정] 버전 기록(V28.40/V29.10)의 0주 락온 디커플링 환각 사태 완벽 수술:
-# telegram_view.py 에는 방어막이 이식되었으나 telegram_bot.py 에서 is_zero_start 팩트를 
-# 넘겨주지 않아 발생한 절반의 수술(의존성 누수)을 원천 차단. 
-# 스냅샷의 is_zero_start 팩트를 추출하여 뷰포트로 직결(Lock-on)하고, Buy1/Buy2 타점 연산 시에도 
-# 실시간 잔고(v_rev_q_qty == 0) 대신 스냅샷 팩트를 바라보도록 아키텍처 배선 100% 팩트 교정 완료.
+# 🚨 [V30.02 팩트 교정] 버전 기록(V28.40/V29.10)의 0주 락온 디커플링 환각 사태 완벽 수술
+# 🚨 [V30.03 팩트 교정] AVWAP 암살자 타임라인 디커플링 (옵션 B 이식):
+# 10:00 EST 이전 및 14:00 EST 이후 대기 상태일 때, 내부 매크로 사유를 은폐하고
+# 시간제한 팩트를 명확히 직관적으로 오버라이드(Override)하는 렌더링 로직 추가.
 # ==========================================================
 import logging
 import datetime
@@ -438,7 +437,6 @@ class TelegramController:
                     if hasattr(self.strategy, 'v14_plugin') and hasattr(self.strategy.v14_plugin, 'load_daily_snapshot'):
                         cached_snap = self.strategy.v14_plugin.load_daily_snapshot(t)
             
-            # 🚨 [V30.02 팩트 교정] 스냅샷의 is_zero_start 팩트 추출 락온
             logic_qty = actual_qty
             is_zero_start_fact = (actual_qty == 0)
             if cached_snap:
@@ -539,7 +537,6 @@ class TelegramController:
                     v_rev_guidance += " 🔵 매도: 대기 물량 없음 (관망)\n"
                 
                 if safe_prev_close > 0:
-                    # 🚨 [V30.02 팩트 교정] 타점 연산 시 실잔고 대신 스냅샷 is_zero_start_fact 팩트 절대 의존
                     b1_price = round(safe_prev_close / 0.935 if is_zero_start_fact else safe_prev_close * 0.995, 2)
                     b2_price = round(safe_prev_close * 0.999 if is_zero_start_fact else safe_prev_close * 0.9725, 2)
                     
@@ -609,7 +606,17 @@ class TelegramController:
                         except Exception as e:
                             logging.error(f"🚨 [{t}] AVWAP 실시간 레이더 스캔 타임아웃/에러: {e}")
 
-            # 🚨 [V30.02 팩트 교정] 뷰포트로 쏘는 딕셔너리에 is_zero_start 팩트 직결 락온 추가
+                    # 🚨 [V30.03 팩트 교정] 옵션 B 타임라인 동적 오버라이드
+                    if not tracking_cache.get(f"AVWAP_BOUGHT_{t}") and not tracking_cache.get(f"AVWAP_SHUTDOWN_{t}"):
+                        curr_time = now_est.time()
+                        time_1000 = datetime.time(10, 0)
+                        time_1400 = datetime.time(14, 0)
+                        
+                        if curr_time < time_1000:
+                            avwap_status_txt = "⏳ 대기 (10:00 EST 기상 대기중)"
+                        elif curr_time >= time_1400:
+                            avwap_status_txt = "⛔ 감시 종료 (10:00~14:00 EST 제한)"
+
             ticker_data_list.append({
                 'ticker': t, 'version': ver, 't_val': t_val, 'split': split, 'curr': curr, 'avg': actual_avg, 'qty': actual_qty,
                 'profit_amt': (curr - actual_avg) * actual_qty if actual_qty > 0 else 0, 
