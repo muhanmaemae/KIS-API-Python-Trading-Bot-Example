@@ -468,7 +468,7 @@ class TelegramView:
                     body_msg += f"▫️ 실시간 VWAP: ${base_vwap:,.2f}\n"
                     
                     gap_color = "🔴" if gap_pct <= -0.67 else "🟢"
-                    body_msg += f"▫️ 이탈률(Gap): {gap_color} <b>{gap_pct:+.2f}%</b> (타격: -0.67%)\n"
+                    body_msg += f"▫️ 이탈률(Gap): {gap_color} <b>{gap_pct:+.2f}%</b>(타격:-0.67%)\n"
                     body_msg += f"▫️ 독립 물량: {avwap_qty}주 (평단 ${avwap_avg:.2f})\n"
                     body_msg += f"▫️ 작전 상태: <b>{avwap_status}</b>\n"
                     
