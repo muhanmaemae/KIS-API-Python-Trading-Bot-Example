@@ -16,6 +16,12 @@
 # KIS API가 0주 상태이거나 서버 응답 변동 시 output2를 빈 리스트([])로 반환하여
 # AttributeError 런타임 붕괴를 유발하던 치명적 맹점을 isinstance 기반의 
 # 타입 락온(Lock-on) 방어막으로 원천 차단 완료.
+# MODIFIED: [V29.18 런타임 붕괴 방어 및 페이징 결함 수술]
+# 1) get_unfilled_orders_detail 및 get_execution_history에서 ctx_area_fk200 파싱 시 
+#    결측치(None) 유입으로 인한 AttributeError 런타임 붕괴를 Safe Casting으로 원천 차단.
+# 2) get_account_balance 함수에 tr_cont 헤더 기반의 페이징(Pagination) 로직을 이식하여
+#    20종목 초과 시 발생하는 잔고 스캔 데이터 기아(Data Starvation) 맹점 완벽 교정.
+# 3) 논리적 앵커 통일을 위해 America/New_York을 US/Eastern으로 100% 락온(Lock-on) 형변환.
 # ==========================================================
 
 import requests
@@ -213,7 +219,6 @@ class KoreaInvestmentBroker:
             api_success = True
             o2 = res.get('output2', {})
             
-            # NEW: [V28.34 타입 세이프 쉴드 이식] 빈 리스트 반환 시 딕셔너리로 치환하여 AttributeError 원천 차단
             if isinstance(o2, list):
                 o2 = o2[0] if len(o2) > 0 else {}
             
@@ -226,50 +231,69 @@ class KoreaInvestmentBroker:
 
         target_excgs = ["NASD", "AMEX", "NYSE"] 
         
+        # MODIFIED: [V29.18 잔고 스캔 데이터 기아(Data Starvation) 원천 차단] 
+        # 페이징(Pagination) 누락으로 20종목 이상 보유 시 발생하는 잔고 증발 맹점을 해결하기 위해 
+        # _api_request 다이렉트 호출 및 tr_cont 기반 무한 루프 페이징 락온 이식.
         for excg in target_excgs:
-            params_hold = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "OVRS_EXCG_CD": excg, "TR_CRCY_CD": "USD", "CTX_AREA_FK200": "", "CTX_AREA_NK200": ""}
-            res_hold = self._call_api("TTTS3012R", "/uapi/overseas-stock/v1/trading/inquire-balance", "GET", params_hold)
-            
-            if res_hold.get('rt_cd') == '0':
-                api_success = True
-                if cash <= 0:
-                    o2 = res_hold.get('output2', {})
-                    # NEW: [V28.34 타입 세이프 쉴드 이식] 빈 리스트 반환 시 딕셔너리로 치환
-                    if isinstance(o2, list):
-                        o2 = o2[0] if len(o2) > 0 else {}
-                    new_cash = self._safe_float(o2.get('ovrs_ord_psbl_amt', 0))
-                    if new_cash > cash: cash = new_cash
+            fk200, nk200 = "", ""
+            for attempt in range(20): # 최대 20페이지 스캔 방어막
+                params_hold = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "OVRS_EXCG_CD": excg, "TR_CRCY_CD": "USD", "CTX_AREA_FK200": fk200, "CTX_AREA_NK200": nk200}
+                headers = self._get_header("TTTS3012R")
+                url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
+                res_hold, resp_json = self._api_request("GET", url, headers, params=params_hold)
                 
-                for item in (res_hold.get('output1') or []):
-                    ticker = item.get('ovrs_pdno')
-                    if not ticker:
-                        continue
+                if res_hold and resp_json.get('rt_cd') == '0':
+                    api_success = True
+                    if cash <= 0:
+                        o2 = resp_json.get('output2', {})
+                        if isinstance(o2, list):
+                            o2 = o2[0] if len(o2) > 0 else {}
+                        new_cash = self._safe_float(o2.get('ovrs_ord_psbl_amt', 0))
+                        if new_cash > cash: cash = new_cash
+                    
+                    for item in (resp_json.get('output1') or []):
+                        ticker = item.get('ovrs_pdno')
+                        if not ticker:
+                            continue
+                            
+                        qty = int(self._safe_float(item.get('ovrs_cblc_qty', 0)))
+                        ord_psbl_qty = int(self._safe_float(item.get('ord_psbl_qty', 0)))
+                        avg = self._safe_float(item.get('pchs_avg_pric', 0))
                         
-                    qty = int(self._safe_float(item.get('ovrs_cblc_qty', 0)))
-                    ord_psbl_qty = int(self._safe_float(item.get('ord_psbl_qty', 0)))
-                    avg = self._safe_float(item.get('pchs_avg_pric', 0))
-                    
-                    if qty > 0 and ord_psbl_qty == 0:
-                        ord_psbl_qty = qty
-                    
-                    if qty > 0:
-                        if ticker not in holdings: 
-                            holdings[ticker] = {'qty': qty, 'ord_psbl_qty': ord_psbl_qty, 'avg': avg}
-                        else:
-                            prev = holdings[ticker]
-                            
-                            # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
-                            # MODIFIED: [V28.15 장부 뻥튀기 팩트 수술] KIS API가 동일 수량/동일 평단가의 데이터를 다른 거래소 응답으로 
-                            # 한 번 더 보내는 경우(유령 중복 응답), 무지성으로 합산(+=)하지 않고 무시하도록 멱등성 필터링 이식.
-                            if prev['qty'] == qty and abs(prev['avg'] - avg) < 0.001:
-                                continue 
+                        if qty > 0 and ord_psbl_qty == 0:
+                            ord_psbl_qty = qty
+                        
+                        if qty > 0:
+                            if ticker not in holdings: 
+                                holdings[ticker] = {'qty': qty, 'ord_psbl_qty': ord_psbl_qty, 'avg': avg}
+                            else:
+                                prev = holdings[ticker]
                                 
-                            total_qty = prev['qty'] + qty
-                            new_avg = ((prev['avg'] * prev['qty']) + (avg * qty)) / total_qty if total_qty > 0 else avg
-                            
-                            holdings[ticker]['qty'] = total_qty
-                            holdings[ticker]['ord_psbl_qty'] += ord_psbl_qty
-                            holdings[ticker]['avg'] = new_avg
+                                # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
+                                # MODIFIED: KIS API가 동일 수량/동일 평단가의 데이터를 다른 거래소 응답으로 
+                                # 한 번 더 보내는 경우(유령 중복 응답), 무지성으로 합산(+=)하지 않고 무시하도록 멱등성 필터링 이식.
+                                if prev['qty'] == qty and abs(prev['avg'] - avg) < 0.001:
+                                    continue 
+                                    
+                                total_qty = prev['qty'] + qty
+                                new_avg = ((prev['avg'] * prev['qty']) + (avg * qty)) / total_qty if total_qty > 0 else avg
+                                
+                                holdings[ticker]['qty'] = total_qty
+                                holdings[ticker]['ord_psbl_qty'] += ord_psbl_qty
+                                holdings[ticker]['avg'] = new_avg
+
+                    tr_cont = res_hold.headers.get('tr_cont', '') if hasattr(res_hold, 'headers') else ''
+                    # MODIFIED: [V29.18 결측치 Safe Casting 방어막]
+                    fk200 = (resp_json.get('ctx_area_fk200', '') or '').strip()
+                    nk200 = (resp_json.get('ctx_area_nk200', '') or '').strip()
+
+                    if tr_cont in ['M', 'F'] and nk200:
+                        time.sleep(0.2)
+                        continue
+                    else:
+                        break
+                else:
+                    break
         
         if api_success: return cash, holdings
         else: return cash, None
@@ -284,7 +308,8 @@ class KoreaInvestmentBroker:
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.droplevel(1)
                 
-            est = pytz.timezone('America/New_York')
+            # MODIFIED: [V29.18 타임존 락온 규약 통일] America/New_York을 US/Eastern으로 형변환
+            est = pytz.timezone('US/Eastern')
             
             if df.index.tz is None:
                 df.index = df.index.tz_localize('UTC').tz_convert(est)
@@ -346,7 +371,6 @@ class KoreaInvestmentBroker:
     def get_current_price(self, ticker, is_market_closed=False):
         try:
             stock = yf.Ticker(ticker)
-            # MODIFIED: [YF 무한 대기 방어] 타임아웃이 없는 fast_info 호출을 전면 소각하고 KIS API로 즉각 우회
             hist = stock.history(period="1d", interval="1m", prepost=True, timeout=5)
             if not hist.empty: return float(hist['Close'].iloc[-1])
             else: raise ValueError("YF 실시간 데이터 응답 지연 (timeout)") 
@@ -394,7 +418,8 @@ class KoreaInvestmentBroker:
             stock = yf.Ticker(ticker)
             hist = stock.history(period="5d", timeout=5)
             if not hist.empty:
-                est = pytz.timezone('America/New_York')
+                # MODIFIED: [V29.18 타임존 락온 규약 통일] America/New_York을 US/Eastern으로 형변환
+                est = pytz.timezone('US/Eastern')
                 now_est = datetime.datetime.now(est)
                 
                 cutoff_date = now_est.date()
@@ -446,7 +471,8 @@ class KoreaInvestmentBroker:
             if df.empty: return None
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.droplevel(1)
                 
-            est = pytz.timezone('America/New_York')
+            # MODIFIED: [V29.18 타임존 락온 규약 통일] America/New_York을 US/Eastern으로 형변환
+            est = pytz.timezone('US/Eastern')
             if df.index.tz is None: df.index = df.index.tz_localize('UTC').tz_convert(est)
             else: df.index = df.index.tz_convert(est)
                 
@@ -476,8 +502,9 @@ class KoreaInvestmentBroker:
                 valid_orders.extend([item for item in output if item.get('pdno') == ticker])
                 
                 tr_cont = res.headers.get('tr_cont', '') if hasattr(res, 'headers') else ''
-                fk200 = resp_json.get('ctx_area_fk200', '').strip()
-                nk200 = resp_json.get('ctx_area_nk200', '').strip()
+                # MODIFIED: [V29.18 결측치(None) 유입에 따른 AttributeError 런타임 붕괴 방어막] Safe Casting 이식
+                fk200 = (resp_json.get('ctx_area_fk200', '') or '').strip()
+                nk200 = (resp_json.get('ctx_area_nk200', '') or '').strip()
                 
                 if tr_cont in ['M', 'F'] and nk200:
                     time.sleep(0.3)
@@ -679,8 +706,9 @@ class KoreaInvestmentBroker:
                         continue
                         
                 tr_cont = res.headers.get('tr_cont', '') if hasattr(res, 'headers') else ''
-                fk200 = resp_json.get('ctx_area_fk200', '').strip()
-                nk200 = resp_json.get('ctx_area_nk200', '').strip()
+                # MODIFIED: [V29.18 결측치(None) 유입에 따른 AttributeError 런타임 붕괴 방어막] Safe Casting 이식
+                fk200 = (resp_json.get('ctx_area_fk200', '') or '').strip()
+                nk200 = (resp_json.get('ctx_area_nk200', '') or '').strip()
                 
                 if tr_cont in ['M', 'F'] and nk200:
                     time.sleep(0.3) 
@@ -710,7 +738,8 @@ class KoreaInvestmentBroker:
         if curr_qty == 0: return [], 0, 0.0
             
         ledger_records = []
-        est = pytz.timezone('America/New_York')
+        # MODIFIED: [V29.18 타임존 락온 규약 통일] America/New_York을 US/Eastern으로 형변환
+        est = pytz.timezone('US/Eastern')
         target_date = datetime.datetime.now(est)
         genesis_reached = False
         loop_counter = 0 
@@ -769,14 +798,13 @@ class KoreaInvestmentBroker:
             splits = stock.splits
             if splits is not None and not splits.empty:
                 if last_date_str == "":
-                    est = pytz.timezone('America/New_York')
+                    # MODIFIED: [V29.18 타임존 락온 규약 통일] America/New_York을 US/Eastern으로 형변환
+                    est = pytz.timezone('US/Eastern')
                     seven_days_ago = datetime.datetime.now(est) - datetime.timedelta(days=7)
                     safe_last_date = seven_days_ago.strftime('%Y-%m-%d')
                 else: safe_last_date = last_date_str
                     
                 for split_date_dt, ratio in splits.items():
-                    # MODIFIED: [V28.28 yfinance 버전 호환] 최신 yfinance에서 날짜 키가 문자열로
-                    # 반환될 수 있으므로 Timestamp/str 양쪽을 모두 안전하게 처리.
                     if isinstance(split_date_dt, str):
                         split_date = split_date_dt[:10]
                     else:
@@ -816,7 +844,6 @@ class KoreaInvestmentBroker:
         try:
             stock = yf.Ticker(ticker)
             hist = stock.history(period="1d", interval="1m", prepost=True, timeout=5)
-            # MODIFIED: [YF 무한 대기 방어] 타임아웃 없는 fast_info 고/저가 호출 소각 및 KIS API 우회
             if not hist.empty: return float(hist['High'].max()), float(hist['Low'].min())
             else: raise ValueError("YF 고가/저가 데이터 응답 지연 (timeout)")
         except Exception as e: pass
