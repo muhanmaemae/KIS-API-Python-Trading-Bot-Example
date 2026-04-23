@@ -22,6 +22,10 @@
 # 🚨 [V29.05 핵심 수술] 평단가 하방 오염 디커플링: V-REV 지시서(가이던스) 연산 시 한투 평단가(actual_avg) 개입을 영구 차단하고, 큐(Queue) 지층 기반 순수 역산 로직 100% 이식 완료.
 # 🚨 [V29.08 팩트 교정] 장마감(CLOSE) 현재가 출력 수술: 애프터마켓 종료 후에는 실시간 가격($100.25) 대신 '정규장 종가($98.09)'를 현재가(curr)로 강제 고정하여 HTS와 100% 동기화 완료.
 # 🚨 [V29.10 팩트 교정] V-REV 0주 새출발 렌더링 시 스냅샷 수량(logic_qty) 의존성 전면 소각 및 실잔고(v_rev_q_qty) 기반 100% 디커플링 완성 (타점 오염 및 줍줍 렌더링 버그 영구 차단)
+# 🚨 [V30.01 팩트 수술] AVWAP 암살자 실시간 레이더(Radar) 시각화 엔진의 혈관(Sync Engine) 개통:
+# /sync 명령어 조립 파이프라인에서 기초자산 1분봉 데이터와 현재가를 팩트로 스캔한 뒤,
+# strategy의 get_decision() 블랙박스를 돌려 추출한 base_vwap, gap_pct 값을
+# t_info 딕셔너리에 원자적으로 주입(Lock-on)하여 렌더링 뷰포트에 100% 동기화 완료.
 # ==========================================================
 import logging
 import datetime
@@ -398,7 +402,6 @@ class TelegramController:
             
             safe_prev_close = prev_close if prev_close else 0.0
             
-            # 야후 파이낸스 정규장 종가 스캔
             if status_code in ["AFTER", "CLOSE", "PRE"]:
                 try:
                     def get_yf_close():
@@ -410,8 +413,6 @@ class TelegramController:
                 except Exception as e:
                     logging.debug(f"YF 정규장 종가 롤오버 스캔 실패 ({t}): {e}")
 
-            # 🟢 [V29.08 팩트 교정] 장마감(CLOSE) 상태일 경우, 
-            # 애프터마켓 변동 가격을 무시하고 정규장 종가를 현재가로 강제 치환
             if status_code == "CLOSE":
                 curr = safe_prev_close
 
@@ -471,6 +472,12 @@ class TelegramController:
             avwap_qty = 0
             avwap_avg = 0.0
             avwap_status_txt = ""
+            
+            # 🚨 [V30.01 수술] AVWAP 실시간 기초자산 팩트 스캔을 위한 변수 초기화
+            avwap_base_ticker = 'N/A'
+            avwap_base_price = 0.0
+            avwap_base_vwap = 0.0
+            avwap_gap_pct = 0.0
 
             if ver == "V_REV":
                 if not getattr(self, 'queue_ledger', None):
@@ -487,9 +494,6 @@ class TelegramController:
                 
                 tag = "VWAP" if is_manual_vwap else "LOC"
                 
-                # ==========================================================
-                # 🚨 [V29.05 핵심 수술] V-REV 매도가 가이던스(지시서) 100% 디커플링 이식
-                # ==========================================================
                 if cached_snap and "orders" in cached_snap and v_rev_q_qty > 0:
                     sell_idx = 1
                     for o in cached_snap["orders"]:
@@ -534,9 +538,6 @@ class TelegramController:
                     v_rev_guidance += " 🔵 매도: 대기 물량 없음 (관망)\n"
                 
                 if safe_prev_close > 0:
-                    # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
-                    # V-REV 0주 새출발 타점(Buy1, Buy2) 및 줍줍 생략 UI 렌더링 시, 절대 스냅샷 기반의 logic_qty를 사용하지 말 것.
-                    # 당일 전량 익절로 인한 0주 상태를 즉각 반영하기 위해 반드시 실잔고 팩트인 v_rev_q_qty를 기준으로 분기(Decoupling)해야 함.
                     b1_price = round(safe_prev_close / 0.935 if v_rev_q_qty == 0 else safe_prev_close * 0.995, 2)
                     b2_price = round(safe_prev_close * 0.999 if v_rev_q_qty == 0 else safe_prev_close * 0.9725, 2)
                     
@@ -579,6 +580,34 @@ class TelegramController:
                     else:
                         avwap_status_txt = "👀 장초반 필터 스캔 및 타점 대기"
 
+                    # 🚨 [V30.01 팩트 수술] AVWAP 실시간 레이더(Radar) 시각화 엔진의 혈관(Sync Engine) 개통
+                    avwap_base_ticker = 'SOXX' if t == 'SOXL' else ('QQQ' if t == 'TQQQ' else t)
+
+                    if status_code in ["PRE", "REG"] and not tracking_cache.get(f"AVWAP_SHUTDOWN_{t}"):
+                        try:
+                            df_1min_base = await asyncio.wait_for(asyncio.to_thread(self.broker.get_1min_candles_df, avwap_base_ticker), timeout=3.0)
+                            base_curr_p = float(await asyncio.wait_for(asyncio.to_thread(self.broker.get_current_price, avwap_base_ticker), timeout=3.0) or 0.0)
+                            
+                            if hasattr(self.strategy, 'v_avwap_plugin'):
+                                decision = self.strategy.v_avwap_plugin.get_decision(
+                                    base_ticker=avwap_base_ticker,
+                                    exec_ticker=t,
+                                    base_curr_p=base_curr_p,
+                                    exec_curr_p=curr,
+                                    df_1min_base=df_1min_base,
+                                    avwap_qty=avwap_qty,
+                                    now_est=now_est
+                                )
+                                avwap_base_price = decision.get('base_curr_p', base_curr_p)
+                                avwap_base_vwap = decision.get('vwap', 0.0)
+                                avwap_gap_pct = decision.get('gap_pct', 0.0)
+                                
+                                if "대기" in avwap_status_txt:
+                                    reason = decision.get('reason', '타점 계산중')
+                                    avwap_status_txt = f"⏳ 대기 ({reason})"
+                        except Exception as e:
+                            logging.error(f"🚨 [{t}] AVWAP 실시간 레이더 스캔 타임아웃/에러: {e}")
+
             ticker_data_list.append({
                 'ticker': t, 'version': ver, 't_val': t_val, 'split': split, 'curr': curr, 'avg': actual_avg, 'qty': actual_qty,
                 'profit_amt': (curr - actual_avg) * actual_qty if actual_qty > 0 else 0, 
@@ -608,6 +637,10 @@ class TelegramController:
                 'avwap_qty': avwap_qty,
                 'avwap_avg': avwap_avg,
                 'avwap_status': avwap_status_txt,
+                'avwap_base_ticker': avwap_base_ticker if is_avwap_active else 'N/A',
+                'avwap_base_price': avwap_base_price if is_avwap_active else 0.0,
+                'avwap_base_vwap': avwap_base_vwap if is_avwap_active else 0.0,
+                'avwap_gap_pct': avwap_gap_pct if is_avwap_active else 0.0,
                 'is_manual_vwap': is_manual_vwap
             })
             
