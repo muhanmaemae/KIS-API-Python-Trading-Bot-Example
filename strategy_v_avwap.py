@@ -13,6 +13,7 @@
 # MODIFIED: [V29.12 핫픽스] 스케줄러 매개변수 불일치 런타임 붕괴 원천 차단 및 Safe Casting 다형성(Polymorphism) 지원
 # MODIFIED: [V29.13 핫픽스] 데이터 기아(Data Starvation) 방어막 이식 및 다형성 맵핑 2차 강화
 # NEW: [UI 패치] 텔레그램 /sync 실시간 레이더 렌더링을 위한 팩트 데이터(gap_pct) 반환 패키징
+# 🚨 [V30.05 팩트 수술] AVWAP 암살자 모니터링 타임라인 1시간 연장 (14:00 -> 15:00 EST) 및 조건문 교정 완비.
 # ==========================================================
 import logging
 import datetime
@@ -136,7 +137,8 @@ class VAvwapHybridPlugin:
         curr_time = now_est.time()
         
         time_1000 = datetime.time(10, 0)
-        time_1400 = datetime.time(14, 0)
+        # 🚨 [V30.05 팩트 수술] 매수 윈도우 시간 연장 (14:00 -> 15:00)
+        time_1500 = datetime.time(15, 0)
         time_1430 = datetime.time(14, 30)
         time_1555 = datetime.time(15, 55)
 
@@ -174,8 +176,6 @@ class VAvwapHybridPlugin:
             except Exception as e:
                 logging.error(f"🚨 [V_AVWAP] 기초자산 1분봉 VWAP 연산 실패: {e}")
 
-        # NEW: 실시간 레이더 패키징 헬퍼 함수
-        # 텔레그램 /sync 지시서에 기초자산 팩트 데이터를 밀어넣기 위한 표준 포맷 생성
         def _build_res(action, reason, qty=0, target_price=0.0):
             gap_pct = ((base_curr_p - base_vwap) / base_vwap * 100.0) if base_vwap > 0 else 0.0
             return {
@@ -237,7 +237,8 @@ class VAvwapHybridPlugin:
             if avg_vol_20 > 0 and base_current_30m_vol >= (avg_vol_20 * 2.0) and base_curr_p < base_vwap:
                 return _build_res('SHUTDOWN', '기초자산_RVOL_스파이크_영구동결')
                 
-        if time_1000 <= curr_time <= time_1400:
+        # 🚨 [V30.05 팩트 수술] 매수 윈도우 스캔 구간 조건문 교정
+        if time_1000 <= curr_time <= time_1500:
             if base_curr_p <= base_vwap * (1 - self.base_dip_buy_pct):
                 if exec_curr_p > 0 and avwap_alloc_cash > 0:
                     buy_qty = int(math.floor(avwap_alloc_cash / exec_curr_p))

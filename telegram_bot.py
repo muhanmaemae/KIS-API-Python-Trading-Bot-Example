@@ -24,9 +24,8 @@
 # 🚨 [V29.10 팩트 교정] V-REV 0주 새출발 렌더링 시 스냅샷 수량(logic_qty) 의존성 전면 소각 및 실잔고(v_rev_q_qty) 기반 100% 디커플링 완성 (타점 오염 및 줍줍 렌더링 버그 영구 차단)
 # 🚨 [V30.01 팩트 수술] AVWAP 암살자 실시간 레이더(Radar) 시각화 엔진의 혈관(Sync Engine) 개통
 # 🚨 [V30.02 팩트 교정] 버전 기록(V28.40/V29.10)의 0주 락온 디커플링 환각 사태 완벽 수술
-# 🚨 [V30.03 팩트 교정] AVWAP 암살자 타임라인 디커플링 (옵션 B 이식):
-# 10:00 EST 이전 및 14:00 EST 이후 대기 상태일 때, 내부 매크로 사유를 은폐하고
-# 시간제한 팩트를 명확히 직관적으로 오버라이드(Override)하는 렌더링 로직 추가.
+# 🚨 [V30.04 팩트 교정] AVWAP 암살자 타임라인 시간 표기 100% 소각
+# 🚨 [V30.05 팩트 수술] AVWAP 암살자 모니터링 타임라인 1시간 연장 (14:00 -> 15:00 EST) 렌더링 디커플링 교정.
 # ==========================================================
 import logging
 import datetime
@@ -606,16 +605,16 @@ class TelegramController:
                         except Exception as e:
                             logging.error(f"🚨 [{t}] AVWAP 실시간 레이더 스캔 타임아웃/에러: {e}")
 
-                    # 🚨 [V30.03 팩트 교정] 옵션 B 타임라인 동적 오버라이드
+                    # 🚨 [V30.05 팩트 교정] AVWAP 감시 시간 15시로 연장
                     if not tracking_cache.get(f"AVWAP_BOUGHT_{t}") and not tracking_cache.get(f"AVWAP_SHUTDOWN_{t}"):
                         curr_time = now_est.time()
                         time_1000 = datetime.time(10, 0)
-                        time_1400 = datetime.time(14, 0)
+                        time_1500 = datetime.time(15, 0)
                         
                         if curr_time < time_1000:
-                            avwap_status_txt = "⏳ 대기(10시EST 기상 )"
-                        elif curr_time >= time_1400:
-                            avwap_status_txt = "⛔ 감시종료(10~14시EST)"
+                            avwap_status_txt = "⏳  금일 감시 대기 "
+                        elif curr_time >= time_1500:
+                            avwap_status_txt = "⛔ 금일 감시 종료"
 
             ticker_data_list.append({
                 'ticker': t, 'version': ver, 't_val': t_val, 'split': split, 'curr': curr, 'avg': actual_avg, 'qty': actual_qty,
