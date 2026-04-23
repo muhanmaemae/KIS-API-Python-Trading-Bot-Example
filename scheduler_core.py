@@ -1,5 +1,5 @@
 # ==========================================================
-# [scheduler_core.py] - 🌟 100% 통합 완성본 (V29.05) 🌟
+# [scheduler_core.py] - 🌟 100% 통합 완성본 (V29.06) 🌟
 # ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
 # 💡 [V24.09 패치] API 결측치(None) 방어용 Safe Casting 전면 이식 완료
 # 💡 [V24.10 수술] V_REV 동적 에스크로 차감 방어 (이중 차감 방지)
@@ -11,6 +11,7 @@
 # 🚀 [V27.25 그랜드 수술] 서머타임 데드락 해제, 잔고 조회 API 병목(O(N)->O(1)) 격상, 계절변경 Fail-Open 맹점 영구 적출
 # 🛠️ [V27.26 긴급 패치] 17시 잔고 조회 시 증권사 API의 빈 리스트([]) 응답으로 인한 '.get' 에러(크래시) 원천 차단 방어막 이식
 # 🚀 [V29.05 그랜드 수술] 4대 엣지 케이스 완벽 차단! (비동기 데드락 방어, TOCTOU 락온, 결측치 누적 차단, 10시 정각 EST 멱등성 락)
+# MODIFIED: [V29.06 핫픽스] 얼리 웨이크업 타임 패러독스 원천 차단 (정산 딜레이 안전 마진 5.0초 강제 주입)
 # ==========================================================
 import os
 import logging
@@ -275,7 +276,8 @@ async def scheduled_auto_sync_summer(context):
     
     if now.hour < 10:
         target_time = now.replace(hour=10, minute=0, second=0, microsecond=0)
-        delay = (target_time - now).total_seconds()
+        # MODIFIED: [얼리 웨이크업 타임 패러독스 방어] OS 비동기 스케줄링 오차로 인한 09:59:59.998 기상 및 렌더링 가드 오판을 원천 차단하기 위해 수학적 안전 마진 5.0초 강제 주입
+        delay = (target_time - now).total_seconds() + 5.0
         context.job_queue.run_once(delayed_auto_sync, delay, data=context.job.data, chat_id=context.job.chat_id)
         logging.info(f"⏳ [정산 지연 엔진 가동] 100% 확정 결제 데이터 스캔을 위해 동기화 스케줄을 10:00로 시프트합니다. ({delay}초 뒤 격발)")
         return
@@ -288,7 +290,8 @@ async def scheduled_auto_sync_winter(context):
     
     if now.hour < 10:
         target_time = now.replace(hour=10, minute=0, second=0, microsecond=0)
-        delay = (target_time - now).total_seconds()
+        # MODIFIED: [얼리 웨이크업 타임 패러독스 방어] OS 비동기 스케줄링 오차로 인한 09:59:59.998 기상 및 렌더링 가드 오판을 원천 차단하기 위해 수학적 안전 마진 5.0초 강제 주입
+        delay = (target_time - now).total_seconds() + 5.0
         context.job_queue.run_once(delayed_auto_sync, delay, data=context.job.data, chat_id=context.job.chat_id)
         logging.info(f"⏳ [정산 지연 엔진 가동] 100% 확정 결제 데이터 스캔을 위해 동기화 스케줄을 10:00로 시프트합니다. ({delay}초 뒤 격발)")
         return
