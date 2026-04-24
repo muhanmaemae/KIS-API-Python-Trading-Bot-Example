@@ -12,6 +12,8 @@
 # 오차를 발생시키는 락온(if != "V_REV") 구조 전면 수술. 메인 장부(config.json) 업데이트를 모든 모드에 
 # 개방(Universal Sync)하고, 큐 편입 시 전체 평균 단가 오염을 막기 위해 한계 단가(Marginal Price) 정밀 
 # 역산 및 다이렉트 파일 I/O 방식의 독립 지층(Layer) 강제 편입 락온 적용 완료.
+# NEW: [V30.13 수동매수 익절 증발 방어] 0주 졸업 시 MANUAL_SYNC 지층의 원자적 파일 I/O 강제 락온, 
+# 체결 원장 안정화 대기 루프 교차 검증(False Break 차단), 단가 이중 합산 방어용 한계 단가 역산 엔진 이식.
 # ==========================================================
 import logging
 import datetime
@@ -127,16 +129,30 @@ class TelegramSyncEngine:
                 max_check_qty = max(ledger_qty_for_check, vrev_ledger_qty_for_check)
 
                 target_execs = []
+                # MODIFIED: [V30.13 방어] KIS 체결 지연(Lag) 대기 루프의 조기 탈출(False Break) 맹점 수술.
+                # 단순 과거 장부 기준 수량(max_check_qty) 비교를 철거하고, 
+                # 직전 API 호출 시점과 현재 시점의 실매도량(sold_today)이 일치할 때만 안정화된 것으로 간주하여 루프 탈출.
                 if actual_qty == 0 and max_check_qty > 0:
-                    max_retries = 5
+                    max_retries = 6
+                    prev_sold_today = -1
+                    stable_cnt = 0
                     for attempt in range(max_retries):
                         target_execs = await asyncio.to_thread(self.broker.get_execution_history, ticker, target_kis_str, target_kis_str)
+                        sold_today = 0
                         if target_execs:
                             sold_today = sum(int(float(ex.get('ft_ccld_qty') or '0')) for ex in target_execs if ex.get('sll_buy_dvsn_cd') == "01")
-                            if sold_today >= max_check_qty:
-                                break
+                        
+                        if sold_today >= max_check_qty:
+                            if sold_today == prev_sold_today:
+                                stable_cnt += 1
+                                if stable_cnt >= 1: 
+                                    break
+                            else:
+                                stable_cnt = 0
+                        prev_sold_today = sold_today
+                        
                         if attempt < max_retries - 1:
-                            logging.info(f"⏳ [{ticker}] 체결 원장 지연(Lag) 감지. 최종 매도 단가 정밀 역산을 위해 대기 중... ({attempt+1}/{max_retries})")
+                            logging.info(f"⏳ [{ticker}] 체결 원장 지연(Lag) 감지. 데이터 안정화 및 교차 검증을 위해 대기 중... ({attempt+1}/{max_retries})")
                             await asyncio.sleep(2.0)
                 else:
                     target_execs = await asyncio.to_thread(self.broker.get_execution_history, ticker, target_kis_str, target_kis_str)
@@ -267,11 +283,30 @@ class TelegramSyncEngine:
                                 temp_avg = temp_invested / vrev_ledger_qty if vrev_ledger_qty > 0 else 0.0
                                 missing_price = temp_avg
                                 
+                                # NEW: [V30.13 방어] 수동 매수 단가 이중 합산 뻥튀기 방어 (한계 단가 역산)
+                                # 전체 매수 금액에서 당일 큐에 기편입된 시스템 자동 매수분 금액을 차감하여 순수 수동 매수분만의 단가 도출.
                                 if buy_execs:
                                     b_tot_amt = sum(int(float(ex.get('ft_ccld_qty') or '0')) * float(ex.get('ft_ccld_unpr3') or '0') for ex in buy_execs)
                                     b_tot_q = sum(int(float(ex.get('ft_ccld_qty') or '0')) for ex in buy_execs)
+                                    
                                     if b_tot_q > 0:
-                                        missing_price = round(b_tot_amt / b_tot_q, 4)
+                                        today_str = now_est.strftime('%Y-%m-%d')
+                                        q_today_amt = 0.0
+                                        q_today_qty = 0
+                                        for item in q_data_before:
+                                            if str(item.get("date", "")).startswith(today_str):
+                                                iq = int(float(item.get("qty", 0)))
+                                                q_today_qty += iq
+                                                q_today_amt += iq * float(item.get("price", 0))
+                                                
+                                        pure_manual_q = b_tot_q - q_today_qty
+                                        pure_manual_amt = b_tot_amt - q_today_amt
+                                        
+                                        if pure_manual_q >= missing_qty and pure_manual_q > 0 and pure_manual_amt > 0:
+                                            derived_price = pure_manual_amt / pure_manual_q
+                                            missing_price = round(derived_price, 4)
+                                        else:
+                                            missing_price = round(b_tot_amt / b_tot_q, 4)
                                 
                                 q_data_before.append({
                                     "date": now_est.strftime('%Y-%m-%d %H:%M:%S'),
@@ -280,7 +315,28 @@ class TelegramSyncEngine:
                                     "exec_id": "MANUAL_SYNC"
                                 })
                                 vrev_ledger_qty = tot_q
-                                logging.info(f"🔧 [{ticker}] 미동기화 수동 매수 물량({missing_qty}주, 단가 ${missing_price})을 졸업 큐에 강제 편입하여 PnL 오차 교정 완료.")
+                                
+                                # NEW: [V30.13 방어] 인메모리 증발 및 스냅샷 엔진 충돌 방지를 위한 원자적 파일 I/O 강제 락온
+                                q_file = "data/queue_ledger.json"
+                                try:
+                                    os.makedirs(os.path.dirname(q_file) if os.path.dirname(q_file) else '.', exist_ok=True)
+                                    all_q = {}
+                                    if os.path.exists(q_file):
+                                        with open(q_file, 'r', encoding='utf-8') as f:
+                                            all_q = json.load(f)
+                                    all_q[ticker] = q_data_before
+                                    
+                                    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(q_file) if os.path.dirname(q_file) else '.')
+                                    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                                        json.dump(all_q, f, indent=4, ensure_ascii=False)
+                                    os.replace(tmp_path, q_file)
+                                    
+                                    if hasattr(self.queue_ledger, 'data'):
+                                        self.queue_ledger.data = all_q
+                                        
+                                    logging.info(f"🔧 [{ticker}] 미동기화 수동 매수 물량({missing_qty}주, 진성단가 ${missing_price})을 졸업 큐에 다이렉트 영속화하여 PnL 오차 교정 및 스냅샷 충돌 방어 완료.")
+                                except Exception as e:
+                                    logging.error(f"🚨 MANUAL_SYNC LIFO 큐 파일 I/O 영속화 실패: {e}")
 
                             total_invested = sum(float(item.get("qty", 0)) * float(item.get("price", 0)) for item in q_data_before)
                             q_avg_price = total_invested / vrev_ledger_qty if vrev_ledger_qty > 0 else 0.0
