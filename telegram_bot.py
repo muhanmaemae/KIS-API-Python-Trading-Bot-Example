@@ -30,10 +30,12 @@
 # VWAP 타임 슬라이싱 및 장마감 정산의 무결성을 위해 EST 14:55 ~ 16:10 사이의
 # /update 명령어를 시스템적으로 차단하고 팩트 메시지를 타전하도록 수술 완료.
 # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식을 통한 타임존 오차 차단. cmd_record 비동기 블로킹 방어막 탑재 완료.
+# 🚨 MODIFIED: [V30.18 그랜드 핫픽스] 스냅샷 렌더링 디커플링 무결성 확보 및 실시간 잔고 오염 원천 차단
+# 1) V-REV 지시서 렌더링 시 실시간 잔고(v_rev_q_qty) 의존성을 소각하고 스냅샷 팩트 수량(logic_qty)으로 강제 락온.
+# 2) 잭팟 타임패러독스 차단을 위해 실시간 큐를 스냅샷 수량만큼만 핀셋 역산하여 진성 평단가(snap_avg) 도출.
 # ==========================================================
 import logging
 import datetime
-# MODIFIED: [V30.09] LMT 오차 방어를 위해 pytz 적출 및 ZoneInfo 도입
 from zoneinfo import ZoneInfo
 import time
 import os
@@ -79,7 +81,6 @@ class TelegramController:
         return update.effective_chat.id == int(self.admin_id)
 
     def _get_dst_info(self):
-        # MODIFIED: [V30.09] pytz 소각 및 ZoneInfo 이식
         est = ZoneInfo('America/New_York')
         now_est = datetime.datetime.now(est)
         is_dst = now_est.dst() != datetime.timedelta(0)
@@ -90,7 +91,6 @@ class TelegramController:
             return (18, "❄️ <b>서머타임 해제 (Winter)</b>")
 
     def _get_market_status(self):
-        # MODIFIED: [V30.09] pytz 소각 및 ZoneInfo 이식
         est = ZoneInfo('America/New_York')
         now = datetime.datetime.now(est)
         nyse = mcal.get_calendar('NYSE')
@@ -227,7 +227,6 @@ class TelegramController:
         if not self._is_admin(update):
             return
             
-        # 🚨 [V30.06 NEW] 장중 업데이트 레드존 체크 (14:55 ~ 16:10 EST)
         from plugin_updater import SystemUpdater
         updater = SystemUpdater()
         
@@ -383,7 +382,6 @@ class TelegramController:
         except (IndexError, AttributeError):
             tracking_cache = {}
 
-        # MODIFIED: [V30.09] pytz 소각 및 ZoneInfo 이식
         est = ZoneInfo('America/New_York')
         now_est = datetime.datetime.now(est)
         
@@ -505,20 +503,35 @@ class TelegramController:
                 
                 tag = "VWAP" if is_manual_vwap else "LOC"
                 
-                if cached_snap and "orders" in cached_snap and v_rev_q_qty > 0:
+                # 🚨 MODIFIED: [V30.18 스냅샷 렌더링 디커플링 핫픽스]
+                # 장중 매매로 실시간 큐가 변하더라도 오직 박제된 스냅샷 팩트 수량(logic_qty > 0)에 종속시켜 렌더링 강제 락온
+                if cached_snap and "orders" in cached_snap and logic_qty > 0:
                     sell_idx = 1
                     for o in cached_snap["orders"]:
-                        if o.get('side') == 'SELL':
+                        if o.get('side') == 'SELL' and "잭팟" not in o.get('desc', ''):
                             v_rev_guidance += f" 🔵 매도{sell_idx}(Pop{sell_idx}) ${o['price']:.2f} <b>{o['qty']}주</b> ({tag})\n"
                             sell_idx += 1
                             
                     if not is_manual_vwap:
+                        # 🚨 MODIFIED: [V30.18 방어막] 스냅샷에 avg_price 누락 시 실시간 q_list를 참조하여 잭팟 타점이 요동치던 맹점 원천 차단.
+                        # 스냅샷에 박제된 orders의 수량과 가격만을 100% 역산하여 진성 평단가(snap_avg)를 복원.
                         if 'avg_price' in cached_snap:
-                            snap_avg = cached_snap['avg_price']
+                            snap_avg = float(cached_snap['avg_price'])
                         else:
-                            total_q = sum(item.get('qty', 0) for item in q_list)
-                            total_inv = sum(item.get('qty', 0) * item.get('price', 0.0) for item in q_list)
-                            snap_avg = total_inv / total_q if total_q > 0 else 0.0
+                            _snap_sells = [o for o in cached_snap["orders"] if o.get('side') == 'SELL' and "잭팟" not in o.get('desc', '')]
+                            if _snap_sells:
+                                _snap_q = sum(o.get('qty', 0) for o in _snap_sells)
+                                _snap_amt = 0.0
+                                for _idx, o in enumerate(_snap_sells):
+                                    _p = float(o.get('price', 0.0))
+                                    _q = int(o.get('qty', 0))
+                                    if _idx == 0:
+                                        _snap_amt += _q * (_p / 1.006)
+                                    else:
+                                        _snap_amt += _q * (_p / 1.005)
+                                snap_avg = _snap_amt / _snap_q if _snap_q > 0 else actual_avg
+                            else:
+                                snap_avg = actual_avg
                             
                         target_jackpot = round(snap_avg * 1.01, 2) if snap_avg > 0 else 0.0
                         v_rev_guidance += f" 🎯 [전체 잭팟] ${target_jackpot:.2f} <b>{logic_qty}주</b> (옵션)\n"
@@ -539,9 +552,22 @@ class TelegramController:
                         v_rev_guidance += f" 🔵 매도2(Pop2) ${target_upper:.2f} <b>{upper_qty}주</b> ({tag})\n"
                         
                     if not is_manual_vwap:
-                        total_q = sum(item.get('qty', 0) for item in q_list)
-                        total_inv = sum(item.get('qty', 0) * item.get('price', 0.0) for item in q_list)
-                        pure_queue_avg = total_inv / total_q if total_q > 0 else 0.0
+                        # 🚨 NEW: [V30.18 핫픽스] 폴백(Fallback) 시에도 logic_qty 락온 연산 적용
+                        temp_qty = 0
+                        temp_inv = 0.0
+                        for item in q_list:
+                            item_q = int(float(item.get('qty', 0)))
+                            if item_q == 0: continue
+                            if temp_qty + item_q <= logic_qty:
+                                temp_qty += item_q
+                                temp_inv += item_q * float(item.get('price', 0.0))
+                            else:
+                                rem = logic_qty - temp_qty
+                                if rem > 0:
+                                    temp_qty += rem
+                                    temp_inv += rem * float(item.get('price', 0.0))
+                                break
+                        pure_queue_avg = temp_inv / temp_qty if temp_qty > 0 else 0.0
                         
                         target_jackpot = round(pure_queue_avg * 1.01, 2) if pure_queue_avg > 0 else 0.0
                         v_rev_guidance += f" 🎯 [전체 잭팟] ${target_jackpot:.2f} <b>{logic_qty}주</b> (옵션)\n"
@@ -549,6 +575,7 @@ class TelegramController:
                     v_rev_guidance += " 🔵 매도: 대기 물량 없음 (관망)\n"
                 
                 if safe_prev_close > 0:
+                    # 🚨 MODIFIED: [V30.18 핫픽스] Buy 타점 연산 시 실시간 잔고(v_rev_q_qty == 0) 대신 스냅샷 팩트(is_zero_start_fact) 100% 락온
                     b1_price = round(safe_prev_close / 0.935 if is_zero_start_fact else safe_prev_close * 0.995, 2)
                     b2_price = round(safe_prev_close * 0.999 if is_zero_start_fact else safe_prev_close * 0.9725, 2)
                     
@@ -561,22 +588,22 @@ class TelegramController:
                         v_rev_guidance += f" 🔴 매수2(Buy2) ${b2_price:.2f} <b>{b2_qty}주</b> ({tag})\n"
                         
                     if is_zero_start_fact:
-                        v_rev_guidance += " 🚫 <code>[0주 새출발] 기준 평단가 부재로 줍줍 생략 (1층 확보에 예산 100% 집중)</code>"
+                        v_rev_guidance += " 🚫 <code>[0주 새출발] 기준 평단가 부재로 줍줍 생략 (1층 확보에 예산 100% 집중)</code>\n"
                     elif b2_qty > 0 and b2_price > 0:
                         if not is_manual_vwap:
                             grid_start = round(half_portion_cash / (b2_qty + 1), 2)
                             grid_end = round(half_portion_cash / (b2_qty + 5), 2)
                             if grid_start >= 0.01 and grid_start < b2_price:
                                 grid_end = max(grid_end, 0.01)
-                                v_rev_guidance += f" 🧹 줍줍(5개): ${grid_start:.2f} ~ ${grid_end:.2f} ({tag})"
+                                v_rev_guidance += f" 🧹 줍줍(5개): ${grid_start:.2f} ~ ${grid_end:.2f} ({tag})\n"
                 else:
-                    v_rev_guidance += " 🔴 매수 대기: 타점 연산 대기 중"
+                    v_rev_guidance += " 🔴 매수 대기: 타점 연산 대기 중\n"
 
                 if is_manual_vwap:
-                    v_rev_guidance += "\n\n🚨 <b>[ ⛔ 치명적 경고: 수동 VWAP 설정 ]</b> 🚨\n"
+                    v_rev_guidance += "\n🚨 <b>[ ⛔ 치명적 경고: 수동 VWAP 설정 ]</b> 🚨\n"
                     v_rev_guidance += "한투 앱(V앱)에서 수동 주문을 거실 때, <b>절대로 '하루 종일'로 설정하지 마십시오!</b>\n"
                     v_rev_guidance += "작동 시간은 반드시 \n<b>[장 마감 30분 전 ~ 장 마감]</b>\n으로만 세팅하셔야 창출됩니다.\n"
-                    v_rev_guidance += "장중 내내 작동하게 둘 경우 V-REV 코어 전략의 수익률이 심각하게 파괴됩니다."
+                    v_rev_guidance += "장중 내내 작동하게 둘 경우 V-REV 코어 전략의 수익률이 심각하게 파괴됩니다.\n"
 
                 if hasattr(self.cfg, 'get_avwap_hybrid_mode') and self.cfg.get_avwap_hybrid_mode(t):
                     is_avwap_active = True
@@ -689,7 +716,6 @@ class TelegramController:
         
         if success_tickers: 
             async with self.tx_lock:
-                # MODIFIED: [V30.09] 이벤트 루프 교착 방어를 위한 비동기 래핑
                 _, holdings = await asyncio.to_thread(self.broker.get_account_balance)
             await self.sync_engine._display_ledger(success_tickers[0], chat_id, context, message_obj=status_msg, pre_fetched_holdings=holdings)
         else:
@@ -825,7 +851,6 @@ class TelegramController:
         
         status_msg = await update.message.reply_text("⏳ <b>실시간 시장 지표(HV/VXN) 연산 중...</b>", parse_mode='HTML')
         
-        # MODIFIED: [V30.09] pytz 소각 및 ZoneInfo 이식
         est = ZoneInfo('America/New_York')
         now_est = datetime.datetime.now(est)
 
