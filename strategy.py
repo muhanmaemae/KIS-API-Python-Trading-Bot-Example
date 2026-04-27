@@ -2,6 +2,7 @@
 # [strategy.py] - 🌟 2대 코어 + 하이브리드 라우터 완성본 🌟
 # ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
 # 🚨 MODIFIED: [V32.00 그랜드 수술] 불필요한 AVWAP 동적 파라미터 수신 배선 완전 소각
+# NEW: [V40.XX 옴니 매트릭스] 60MA/120MA 기반 SOXL/SOXS 듀얼 모멘텀 중앙 라우팅 락온 엔진 탑재
 # ==========================================================
 import logging
 import pandas as pd
@@ -74,7 +75,31 @@ class InfiniteStrategy:
         except Exception as e:
             return {"vwap_price": 0.0, "is_strong_up": False, "is_strong_down": False}
 
-    def get_plan(self, ticker, current_price, avg_price, qty, prev_close, ma_5day=0.0, market_type="REG", available_cash=0, is_simulation=False, vwap_status=None, is_snapshot_mode=False):
+    # NEW: [V40.XX 옴니 매트릭스] 시장 국면(Regime) 기반 듀얼 타겟 라우팅 및 락온 필터
+    def apply_omni_matrix_filter(self, ticker, qty, regime_data):
+        """
+        60MA/120MA 기반의 국면 데이터(regime_data)를 해석하여,
+        현재 요청된 티커(SOXL 또는 SOXS)가 당일 신규 매수 가능한지 판별합니다.
+        보유 수량(qty)이 1주라도 있다면 1층 청산(SELL)은 무조건 허용합니다.
+        """
+        if not regime_data or regime_data.get("status") != "success":
+            return {"allow_buy": False, "allow_sell": qty > 0, "msg": "국면 판별 불가 (안전 대기)"}
+
+        target_ticker = regime_data.get("target_ticker", "NONE")
+        regime = regime_data.get("regime", "SIDEWAYS")
+
+        # 횡보장 휩소 구간: 신규 매수 전면 차단 (암살자 퇴직 모드)
+        if target_ticker == "NONE" or regime == "SIDEWAYS":
+            return {"allow_buy": False, "allow_sell": qty > 0, "msg": f"횡보장({regime}) - 암살자 퇴직 (신규 진입 차단)"}
+
+        # 듀얼 모멘텀 공수 일치 여부 확인
+        if ticker.upper() == target_ticker.upper():
+            return {"allow_buy": True, "allow_sell": True, "msg": f"{regime}장 - {ticker.upper()} 진입 락온"}
+        else:
+            return {"allow_buy": False, "allow_sell": qty > 0, "msg": f"{regime}장 - {ticker.upper()} 진입 차단 (타겟: {target_ticker})"}
+
+    # MODIFIED: [V40.XX] 옴니 매트릭스 국면 데이터(regime_data) 수신 파라미터 추가
+    def get_plan(self, ticker, current_price, avg_price, qty, prev_close, ma_5day=0.0, market_type="REG", available_cash=0, is_simulation=False, vwap_status=None, is_snapshot_mode=False, regime_data=None):
         version = self.cfg.get_version(ticker)
         
         if version in ["V13", "V17", "V_VWAP", "V_AVWAP"]:
@@ -83,25 +108,38 @@ class InfiniteStrategy:
             version = "V14"
 
         is_vwap_enabled = getattr(self.cfg, 'get_manual_vwap_mode', lambda x: False)(ticker)
+        
+        # 기본 플랜 산출
         if version == "V14" and is_vwap_enabled:
-            return self.v14_vwap_plugin.get_plan(
+            plan = self.v14_vwap_plugin.get_plan(
                 ticker=ticker, current_price=current_price, avg_price=avg_price, qty=qty,
                 prev_close=prev_close, ma_5day=ma_5day, market_type=market_type,
                 available_cash=available_cash, is_simulation=is_simulation,
                 is_snapshot_mode=is_snapshot_mode
             )
-
-        if version == "V_REV":
-            return {
+        elif version == "V_REV":
+            plan = {
                 'core_orders': [], 'bonus_orders': [], 'orders': [],
                 't_val': 0.0, 'is_reverse': False, 'star_price': 0.0, 'one_portion': 0.0
             }
-
-        return self.v14_plugin.get_plan(
-            ticker=ticker, current_price=current_price, avg_price=avg_price, qty=qty,
-            prev_close=prev_close, ma_5day=ma_5day, market_type=market_type,
-            available_cash=available_cash, is_simulation=is_simulation, vwap_status=vwap_status
-        )
+        else:
+            plan = self.v14_plugin.get_plan(
+                ticker=ticker, current_price=current_price, avg_price=avg_price, qty=qty,
+                prev_close=prev_close, ma_5day=ma_5day, market_type=market_type,
+                available_cash=available_cash, is_simulation=is_simulation, vwap_status=vwap_status
+            )
+            
+        # NEW: [V40.XX] 옴니 매트릭스 필터 적용 (매수 락온 및 청산 패스)
+        if regime_data is not None:
+            omni_filter = self.apply_omni_matrix_filter(ticker, qty, regime_data)
+            if not omni_filter["allow_buy"]:
+                # 매수(BUY) 주문 100% 소각, 청산(SELL) 주문만 보존 (리스트 컴프리헨션)
+                plan['core_orders'] = [o for o in plan.get('core_orders', []) if o.get('side') != 'BUY']
+                plan['bonus_orders'] = [o for o in plan.get('bonus_orders', []) if o.get('side') != 'BUY']
+                plan['orders'] = [o for o in plan.get('orders', []) if o.get('side') != 'BUY']
+                plan['omni_msg'] = omni_filter["msg"]
+                
+        return plan
 
     def capture_vrev_snapshot(self, ticker, clear_price, avg_price, qty):
         if qty <= 0: return None
@@ -138,8 +176,21 @@ class InfiniteStrategy:
     def fetch_avwap_macro(self, base_ticker):
         return self.v_avwap_plugin.fetch_macro_context(base_ticker)
 
-    # MODIFIED: [V32.00] 소각된 동적 파라미터 시그니처 락온
-    def get_avwap_decision(self, base_ticker, exec_ticker, base_curr_p, exec_curr_p, base_day_open, avg_price, qty, alloc_cash, context_data, df_1min_base, now_est, avwap_state=None):
+    # MODIFIED: [V40.XX] 옴니 매트릭스 국면 데이터(regime_data) 연동 파라미터 추가
+    def get_avwap_decision(self, base_ticker, exec_ticker, base_curr_p, exec_curr_p, base_day_open, avg_price, qty, alloc_cash, context_data, df_1min_base, now_est, avwap_state=None, regime_data=None):
+        
+        # NEW: [V40.XX] 옴니 매트릭스 횡보장 암살자 퇴직 및 역방향 차단 방어막
+        if regime_data is not None:
+            omni_filter = self.apply_omni_matrix_filter(exec_ticker, qty, regime_data)
+            if not omni_filter["allow_buy"] and qty == 0:
+                # 보유 수량이 0주인데 진입이 차단된 경우, 즉시 타격 프로세스 종료 (Bypass)
+                return {
+                    "action": "HOLD",
+                    "qty": 0,
+                    "price": 0.0,
+                    "msg": f"⛔ AVWAP 셧다운: {omni_filter['msg']}"
+                }
+
         return self.v_avwap_plugin.get_decision(
             base_ticker=base_ticker, exec_ticker=exec_ticker, base_curr_p=base_curr_p, exec_curr_p=exec_curr_p, 
             base_day_open=base_day_open, avwap_avg_price=avg_price, avwap_qty=qty, avwap_alloc_cash=alloc_cash, 

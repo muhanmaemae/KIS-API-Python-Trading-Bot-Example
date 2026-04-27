@@ -9,6 +9,7 @@
 # NEW: [V28.31] 텔레그램 하단 고정 키보드 텍스트 라우팅 복구 (코파일럿 방식 채택)
 # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo('America/New_York') 이식으로 타임존 무결성 달성
 # 🚨 MODIFIED: [V32.00] 12차 AVWAP 백테스트 팩트 반영. 불필요해진 동적 파라미터(AVWAP_TARGET 등) 텍스트 입력 라우터 전면 소각.
+# NEW: [V40.XX 옴니 매트릭스] V-REV 장막판 갭 스위칭 임계치(Gap Threshold) 텍스트 수신 라우터 신설 탑재
 # ==========================================================
 # NEW: [리팩토링 2단계] 유저 텍스트 입력 및 상태 기계(State Machine) 독립 클래스 분리
 import logging
@@ -188,6 +189,20 @@ class TelegramStates:
                 self.cfg.set_last_split_date(ticker, today_str)
                 
                 await update.message.reply_text(f"✅ [{ticker}] 수동 액면 보정 완료\n▫️ 모든 장부 기록이 {val}배 비율로 정밀하게 소급 조정되었습니다.")
+
+            # NEW: [V40.XX 옴니 매트릭스] V-REV 갭 스위칭 임계치 수신 라우터
+            elif state.startswith("VREV_GAP"):
+                # state 형태: "VREV_GAP_SOXL" -> parts[0]='VREV', parts[1]='GAP', parts[2]='SOXL'
+                ticker = parts[2]
+                
+                # 🚨 사용자 팻핑거(양수 입력) 방어: 음수로 강제 역전
+                if val > 0:
+                    val = -val
+                    
+                if hasattr(self.cfg, 'set_vrev_gap_threshold'):
+                    self.cfg.set_vrev_gap_threshold(ticker, val)
+                    
+                await update.message.reply_text(f"📉 <b>[{ticker}] V-REV 장막판 갭 스위칭 임계치 설정 완료!</b>\n▫️ 팩트 타격선: 기초자산 VWAP 대비 <b>{val}%</b>\n▫️ 다음 타임 슬라이싱 스케줄부터 즉시 적용됩니다.", parse_mode='HTML')
                 
         except ValueError:
             await update.message.reply_text("❌ 오류: 유효한 숫자를 입력하세요. (입력 대기 상태가 강제 해제되었습니다.)")
@@ -196,4 +211,3 @@ class TelegramStates:
         finally:
             if chat_id in controller.user_states:
                 del controller.user_states[chat_id]
-

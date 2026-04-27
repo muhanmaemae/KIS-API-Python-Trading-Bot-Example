@@ -5,6 +5,7 @@
 # 🚨 MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식을 통한 타임존 오차 차단.
 # 🚨 MODIFIED: [V30.18 그랜드 핫픽스] 스냅샷 렌더링 디커플링 무결성 확보 및 실시간 잔고 오염 원천 차단
 # 🚨 MODIFIED: [V32.00] 12차 팩트 반영. cmd_avwap 내부의 파라미터 조회 찌꺼기 완벽 소각.
+# NEW: [V40.XX 옴니 매트릭스] SOXS 티커 진입 시 기초자산을 QQQ로 오인하는 치명적 맹점 전면 수술 및 /avwap 듀얼 라우팅 개방
 # ==========================================================
 import logging
 import datetime
@@ -86,7 +87,8 @@ class TelegramController:
             return "CLOSE", "⛔ 장마감"
 
     def _calculate_budget_allocation(self, cash, tickers):
-        sorted_tickers = sorted(tickers, key=lambda x: 0 if x == "SOXL" else (1 if x == "TQQQ" else 2))
+        # MODIFIED: [V40.XX] SOXS 티커를 SOXL과 동급 우선순위로 라우팅
+        sorted_tickers = sorted(tickers, key=lambda x: 0 if x in ["SOXL", "SOXS"] else (1 if x == "TQQQ" else 2))
         allocated = {}
         rem_cash = cash
         
@@ -156,23 +158,29 @@ class TelegramController:
             
         await self.states_handler.handle_message(update, context, self)
 
-    # MODIFIED: [V32.00] 12차 팩트 하드코딩 룰 적용 (early_target 등 파라미터 소각)
     async def cmd_avwap(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_admin(update):
             return
             
-        t = "SOXL"
-        is_hybrid_on = self.cfg.get_avwap_hybrid_mode(t)
+        # MODIFIED: [V40.XX 옴니 매트릭스] 단일 티커 하드코딩("SOXL") 소각 및 다중 티커 동적 순회 이식
+        active_tickers = self.cfg.get_active_tickers()
+        avwap_tickers = [t for t in active_tickers if t in ["SOXL", "SOXS"]]
         
-        if not is_hybrid_on:
-            msg = f"⚠️ <b>[AVWAP 암살자 오프라인]</b>\n"
-            msg += f"▫️ 현재 {t}의 AVWAP 하이브리드 모드가 꺼져있습니다.\n"
-            msg += f"▫️ <code>/settlement</code> 메뉴에서 먼저 활성화해주세요."
-            return await update.message.reply_text(msg, parse_mode='HTML')
+        if not avwap_tickers:
+            return await update.message.reply_text("⚠️ <b>[AVWAP 암살자 오프라인]</b>\n▫️ 현재 운용 종목 중 AVWAP 지원 종목(SOXL/SOXS)이 없습니다.", parse_mode='HTML')
+            
+        for t in avwap_tickers:
+            is_hybrid_on = self.cfg.get_avwap_hybrid_mode(t)
+            
+            if not is_hybrid_on:
+                msg = f"⚠️ <b>[AVWAP 암살자 오프라인]</b>\n"
+                msg += f"▫️ 현재 {t}의 AVWAP 하이브리드 모드가 꺼져있습니다.\n"
+                msg += f"▫️ <code>/settlement</code> 메뉴에서 먼저 활성화해주세요."
+                await update.message.reply_text(msg, parse_mode='HTML')
+                continue
 
-        # 🚨 [V32.00] 불필요한 동적 파라미터 호출 소각
-        msg, markup = self.view.get_avwap_console_menu(t)
-        await update.message.reply_text(msg, reply_markup=markup, parse_mode='HTML')
+            msg, markup = self.view.get_avwap_console_menu(t)
+            await update.message.reply_text(msg, reply_markup=markup, parse_mode='HTML')
 
     async def cmd_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_admin(update):
@@ -375,9 +383,10 @@ class TelegramController:
             if status_code == "CLOSE":
                 curr = safe_prev_close
 
-            idx_ticker = "SOXX" if t == "SOXL" else "QQQ"
+            # MODIFIED: [V40.XX 옴니 매트릭스] 기초자산 매핑 맹점 전면 수술 (SOXS -> SOXX)
+            idx_ticker = "SOXX" if t in ["SOXL", "SOXS"] else "QQQ"
             dynamic_pct_obj = await asyncio.to_thread(self.broker.get_dynamic_sniper_target, idx_ticker)
-            dynamic_pct = float(dynamic_pct_obj) if dynamic_pct_obj is not None else (8.79 if t == "SOXL" else 4.95)
+            dynamic_pct = float(dynamic_pct_obj) if dynamic_pct_obj is not None else (8.79 if t in ["SOXL", "SOXS"] else 4.95)
             
             tracking_status = tracking_cache.get(t, {})
             current_day_high = tracking_status.get('day_high', day_high) 
@@ -407,10 +416,18 @@ class TelegramController:
                     logic_qty = cached_snap["initial_qty"]
                 is_zero_start_fact = cached_snap.get("is_zero_start", logic_qty == 0)
 
+            # NEW: [V40.XX] 옴니 매트릭스 국면 데이터 지시서 렌더링 파이프라인 개통
+            try:
+                jobs = context.job_queue.jobs() if context.job_queue else []
+                job_data = jobs[0].data if jobs and jobs[0].data is not None else {}
+                regime_data = job_data.get('regime_data')
+            except Exception:
+                regime_data = None
+
             plan = self.strategy.get_plan(
                 t, curr, actual_avg, logic_qty, safe_prev_close, ma_5day=ma_5day,
                 market_type="REG", available_cash=allocated_cash[t],
-                is_simulation=True 
+                is_simulation=True, regime_data=regime_data # 파라미터 주입 완료
             )
             
             split = self.cfg.get_split_count(t)
@@ -569,7 +586,8 @@ class TelegramController:
                     else:
                         avwap_status_txt = "👀 상승장 필터 스캔 및 갭 타점 대기"
 
-                    avwap_base_ticker = 'SOXX' if t == 'SOXL' else ('QQQ' if t == 'TQQQ' else t)
+                    # MODIFIED: [V40.XX 옴니 매트릭스] SOXS 티커 AVWAP 기초자산 매핑(SOXX) 락온
+                    avwap_base_ticker = 'SOXX' if t in ['SOXL', 'SOXS'] else ('QQQ' if t == 'TQQQ' else t)
                     
                     avwap_ctx = tracking_cache.get(f"AVWAP_CTX_{t}")
                     if not avwap_ctx:
@@ -735,7 +753,8 @@ class TelegramController:
         report += "🟥 <code>25.00 이상 </code> : 패닉 셀링 (ON)\n\n"
         
         for t in active_tickers:
-            idx_ticker = "SOXX" if t == "SOXL" else "QQQ"
+            # MODIFIED: [V40.XX 옴니 매트릭스] 기초자산 매핑 맹점 전면 수술
+            idx_ticker = "SOXX" if t in ["SOXL", "SOXS"] else "QQQ"
             dynamic_pct_obj = await asyncio.to_thread(self.broker.get_dynamic_sniper_target, idx_ticker)
             
             if dynamic_pct_obj and hasattr(dynamic_pct_obj, 'metric_val'):
@@ -835,4 +854,3 @@ class TelegramController:
         history_data = self.cfg.get_full_version_history()
         msg, markup = self.view.get_version_message(history_data, page_index=None)
         await update.message.reply_text(msg, reply_markup=markup, parse_mode='HTML')
-

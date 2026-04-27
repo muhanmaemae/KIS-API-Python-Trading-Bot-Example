@@ -6,6 +6,7 @@
 # 2) APScheduler(JobQueue) 잡 등록 시 zi_est, zi_kst를 사용하여 스케줄 증발 원천 차단.
 # 3) 삭제된 get_target_hour 임포트 라인 영구 제거 (ImportError 완벽 방어).
 # 4) 커넥션 풀 최적화 및 타임존 전역 공유 파이프라인 무결성 확보.
+# NEW: [V40.XX 옴니 매트릭스] 10:20 EST 60MA/120MA 시장 국면 판별 스케줄러 탑재 완료
 # ==========================================================
 
 import os
@@ -13,7 +14,7 @@ import logging
 import datetime
 import asyncio
 import math 
-from zoneinfo import ZoneInfo # NEW: [V30.09] 파이썬 표준 타임존 라이브러리
+from zoneinfo import ZoneInfo
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from dotenv import load_dotenv
 
@@ -24,9 +25,8 @@ from telegram_bot import TelegramController
 
 from queue_ledger import QueueLedger
 from strategy_reversion import ReversionStrategy
-from volatility_engine import VolatilityEngine
+from volatility_engine import VolatilityEngine, determine_market_regime
 
-# MODIFIED: [V30.09] 존재하지 않는 get_target_hour 임포트 영구 소각
 from scheduler_core import (
     scheduled_token_check,
     scheduled_auto_sync_summer,
@@ -36,7 +36,6 @@ from scheduler_core import (
     perform_self_cleaning
 )
 
-# 🚨 [V30.00 수술] 분할된 4대 전투 사령부 코어 독립 임포트
 from scheduler_sniper import scheduled_sniper_monitor
 from scheduler_vwap import scheduled_vwap_trade, scheduled_vwap_init_and_cancel
 from scheduler_regular import scheduled_regular_trade
@@ -70,7 +69,6 @@ if not all([TELEGRAM_TOKEN, APP_KEY, APP_SECRET, CANO, ADMIN_CHAT_ID]):
     print("❌ [치명적 오류] .env 파일에 봇 구동 필수 키가 누락되었습니다. 봇을 종료합니다.")
     exit(1)
 
-# MODIFIED: [V30.09] 로그 파일명 생성 타임존을 ZoneInfo로 교체하여 LMT 버그 차단
 est_zone = ZoneInfo('America/New_York')
 log_filename = f"logs/bot_app_{datetime.datetime.now(est_zone).strftime('%Y%m%d')}.log"
 
@@ -83,14 +81,33 @@ logging.basicConfig(
     ]
 )
 
+# MODIFIED: [V40.XX 옴니 매트릭스] 10:20 EST 시장 국면 판별 및 가중치 스캔 하이브리드 엔진
 async def scheduled_volatility_scan(context):
     app_data = context.job.data
     cfg = app_data['cfg']
     base_map = app_data.get('base_map', TICKER_BASE_MAP)
     
     print("\n" + "=" * 60)
-    print("📈 [자율주행 변동성 스캔 완료] (10:20 EST 스냅샷)")
+    print("📈 [자율주행 변동성 & 시장 국면 스캔 완료] (10:20 EST 스냅샷)")
     
+    # 1. 60MA/120MA 듀얼 모멘텀 시장 국면 판별 (비동기 안전 래퍼 호출)
+    regime_data = await determine_market_regime()
+    
+    # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각 방어막]
+    # 판별된 국면 데이터를 전역 app_data에 락온시켜 텔레그램 명령어 및 스나이퍼에서 실시간 참조 가능토록 함
+    app_data['regime_data'] = regime_data
+    
+    if regime_data.get("status") == "success":
+        regime = regime_data.get("regime")
+        target_ticker = regime_data.get("target_ticker")
+        close_p = regime_data.get("close")
+        ma60 = regime_data.get("ma60")
+        ma120 = regime_data.get("ma120")
+        print(f"🏛️ 옴니 매트릭스: [{regime}] 타겟: {target_ticker} (종가: {close_p:.2f}, 60MA: {ma60:.2f}, 120MA: {ma120:.2f})")
+    else:
+        print(f"⚠️ 옴니 매트릭스 판별 실패: {regime_data.get('msg')}")
+
+    # 2. 기존 공포지수 가중치 판별 로직 유지
     active_tickers = cfg.get_active_tickers()
     if not active_tickers:
         print("📊 현재 운용 중인 종목이 없습니다.")
@@ -121,7 +138,6 @@ async def post_init(application: Application):
     application.bot_data['bot_controller'].tx_lock = tx_lock
 
 def main():
-    # MODIFIED: [V30.09] ZoneInfo 기반 서머타임 판별
     est_zone = ZoneInfo('America/New_York')
     kst_zone = ZoneInfo('Asia/Seoul')
     now_est = datetime.datetime.now(est_zone)
@@ -132,7 +148,7 @@ def main():
     latest_version = cfg.get_latest_version() 
     
     print("=" * 60)
-    print(f"🚀 앱솔루트 스노우볼 퀀트 엔진 {latest_version} (V30.09 락온)")
+    print(f"🚀 옴니 매트릭스 퀀트 엔진 {latest_version} (V40.00 락온)")
     print(f"📅 날짜 정보: {season_msg}")
     print(f"⏰ 자동 동기화: 10:00(KST) 확정 스캔 가동")
     print("=" * 60)
@@ -154,7 +170,8 @@ def main():
         'cfg': cfg, 'broker': broker, 'strategy': strategy, 
         'queue_ledger': queue_ledger, 'strategy_rev': strategy_rev,  
         'bot': bot, 'tx_lock': None, 'base_map': TICKER_BASE_MAP,
-        'tz_kst': kst_zone, 'tz_est': est_zone 
+        'tz_kst': kst_zone, 'tz_est': est_zone,
+        'regime_data': None # NEW: 국면 데이터 글로벌 캐시 추가
     }
 
     app = (
@@ -183,7 +200,6 @@ def main():
     
     jq = app.job_queue
     
-    # MODIFIED: [V30.09] 모든 스케줄을 ZoneInfo('America/New_York') 및 ('Asia/Seoul')로 락온하여 LMT 버그 차단
     for tt in [datetime.time(7,0,tzinfo=kst_zone), datetime.time(11,0,tzinfo=kst_zone), datetime.time(16,30,tzinfo=kst_zone), datetime.time(22,0,tzinfo=kst_zone)]:
         jq.run_daily(scheduled_token_check, time=tt, days=tuple(range(7)), chat_id=ADMIN_CHAT_ID, data=app_data)
     
@@ -191,7 +207,10 @@ def main():
     jq.run_daily(SYNC_FUNC, time=datetime.time(10, 0, 5, tzinfo=kst_zone), days=tuple(range(7)), chat_id=ADMIN_CHAT_ID, data=app_data)
     
     jq.run_daily(scheduled_force_reset, time=datetime.time(4, 0, tzinfo=est_zone), days=(0,1,2,3,4), chat_id=ADMIN_CHAT_ID, data=app_data)
+    
+    # MODIFIED: [V40.XX] 옴니 매트릭스 10:20 EST 듀얼 스캔 배선 연결
     jq.run_daily(scheduled_volatility_scan, time=datetime.time(10, 20, tzinfo=est_zone), days=(0,1,2,3,4), chat_id=ADMIN_CHAT_ID, data=app_data)
+    
     jq.run_daily(scheduled_regular_trade, time=datetime.time(4, 5, tzinfo=est_zone), days=(0,1,2,3,4), chat_id=ADMIN_CHAT_ID, data=app_data)
     jq.run_daily(scheduled_vwap_init_and_cancel, time=datetime.time(15, 30, tzinfo=est_zone), days=(0,1,2,3,4), chat_id=ADMIN_CHAT_ID, data=app_data)
 

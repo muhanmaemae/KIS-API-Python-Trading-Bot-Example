@@ -14,6 +14,7 @@
 # MODIFIED: [V29.16 핫픽스] 마스터 스위치 및 스나이퍼 락온(Buy/Sell) 영속성 Getter/Setter 이식
 # MODIFIED: [V30.09 핫픽스] pytz 영구 적출 및 ZoneInfo 도입으로 LMT 버그 차단
 # 🚨 MODIFIED: [V32.00 그랜드 수술] 12차 백테스트 팩트 락온. 불필요해진 AVWAP 조기퇴근/동적갭 파라미터 저장소 완전 소각.
+# NEW: [V40.XX 옴니 매트릭스] SOXL/SOXS 양방향 듀얼 모멘텀 플러그인 연동 및 390분 U-Curve 엔진 탑재
 # ==========================================================
 import json
 import os
@@ -36,6 +37,29 @@ try:
     from version_history import VERSION_HISTORY
 except ImportError:
     VERSION_HISTORY = ["V14.x [-] 버전 기록 파일(version_history.py)을 찾을 수 없습니다."]
+
+
+# MODIFIED: [V40.XX] 별도 플러그인 방식(vwap_data.py)으로 유동성 프로파일 동적 로드
+try:
+    from vwap_data import VWAP_PROFILES
+except ImportError:
+    # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각 방어막]
+    # 데이터 파일이 없을 경우 런타임 붕괴 방지를 위한 빈 딕셔너리 할당 및 Fallback
+    VWAP_PROFILES = {"SOXL": {}, "SOXS": {}}
+    print("⚠️ [경고] vwap_data.py 플러그인을 찾을 수 없습니다. (U-Curve 데이터 부재)")
+
+# NEW: V40.XX 타겟 티커 동적 라우팅 및 3중 거래량 필터 베이스라인 호출 함수
+def get_vwap_profile(ticker: str) -> dict:
+    """
+    플러그인 파일에서 현재 활성화된 티커(SOXL/SOXS)의 U-Curve 프로파일을 반환합니다.
+    """
+    target_ticker = ticker.upper()
+    
+    if target_ticker not in VWAP_PROFILES or not VWAP_PROFILES[target_ticker]:
+        raise ValueError(f"🚨 [치명적 런타임 오류] {target_ticker}의 U-Curve 데이터가 vwap_data.py에 존재하지 않습니다.")
+    
+    return VWAP_PROFILES[target_ticker]
+
 
 class ConfigManager:
     def __init__(self):
@@ -65,16 +89,16 @@ class ConfigManager:
             "AVWAP_MULTI_STRIKE_CFG": "data/avwap_multi_strike.json", # 유지: 12차 다중 출장 플래그
             "VREV_GAP_SWITCH_CFG": "data/vrev_gap_switch.json",       # 유지: V-REV용 갭 스위치
             "VREV_GAP_THRESH_CFG": "data/vrev_gap_thresh.json"        # 유지: V-REV용 갭 스위치 임계치
-            # MODIFIED: [V32.00] 불필요한 AVWAP 파라미터 파일(EARLY_EXIT, EARLY_TARGET, GAP_THRESH) 소각
         }
         
-        self.DEFAULT_SEED = {"SOXL": 6720.0, "TQQQ": 6720.0}
-        self.DEFAULT_SPLIT = {"SOXL": 40.0, "TQQQ": 40.0}
-        self.DEFAULT_TARGET = {"SOXL": 12.0, "TQQQ": 10.0}
-        self.DEFAULT_VERSION = {"SOXL": "V14", "TQQQ": "V14"}
-        self.DEFAULT_COMPOUND = {"SOXL": 70.0, "TQQQ": 70.0}
-        self.DEFAULT_SNIPER_MULTIPLIER = {"SOXL": 1.0, "TQQQ": 0.9}
-        self.DEFAULT_FEE = {"SOXL": 0.25, "TQQQ": 0.25} 
+        # MODIFIED: [V40.XX] 듀얼 모멘텀 시스템에 SOXS를 정식 멤버로 편입하여 에러 원천 차단
+        self.DEFAULT_SEED = {"SOXL": 6720.0, "TQQQ": 6720.0, "SOXS": 6720.0}
+        self.DEFAULT_SPLIT = {"SOXL": 40.0, "TQQQ": 40.0, "SOXS": 40.0}
+        self.DEFAULT_TARGET = {"SOXL": 12.0, "TQQQ": 10.0, "SOXS": 12.0}
+        self.DEFAULT_VERSION = {"SOXL": "V14", "TQQQ": "V14", "SOXS": "V14"}
+        self.DEFAULT_COMPOUND = {"SOXL": 70.0, "TQQQ": 70.0, "SOXS": 70.0}
+        self.DEFAULT_SNIPER_MULTIPLIER = {"SOXL": 1.0, "TQQQ": 0.9, "SOXS": 1.0}
+        self.DEFAULT_FEE = {"SOXL": 0.25, "TQQQ": 0.25, "SOXS": 0.25} 
         
         self._escrow_cache = {}
         self._locks_mutex = threading.Lock()
@@ -773,4 +797,3 @@ class ConfigManager:
         v = self._load_file(self.FILES["CHAT_ID"])
         return int(v) if v else None
     def set_chat_id(self, v): self._save_file(self.FILES["CHAT_ID"], v)
-

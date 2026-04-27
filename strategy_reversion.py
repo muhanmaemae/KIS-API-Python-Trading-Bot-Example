@@ -33,14 +33,22 @@
 # get_dynamic_plan 렌더링 파이프라인에 강력한 필터링 방어막 이식.
 # MODIFIED: [V30.09 핫픽스] pytz 영구 적출 및 ZoneInfo('America/New_York') 이식으로 LMT 버그 차단
 # NEW: [자정 경계 스냅샷/캐시 증발(Cinderella) 타임 패러독스 완벽 방어] 런타임 붕괴(AttributeError) 차단 정수 기반 락온
+# NEW: [V40.XX 옴니 매트릭스] V-REV 내부 U_CURVE 배열 영구 소각 및 vwap_data.py 동적 30분 재정규화 파이프라인 연결 완료
 # ==========================================================
 import math
 import os
 import json
 import tempfile
+import logging
 from datetime import datetime, timedelta
-# MODIFIED: [LMT 오차 방어를 위해 pytz를 적출하고 ZoneInfo 도입]
 from zoneinfo import ZoneInfo
+
+# NEW: [V40.XX 옴니 매트릭스] U-Curve 플러그인 로드 방어막
+try:
+    from vwap_data import VWAP_PROFILES
+except ImportError:
+    VWAP_PROFILES = {}
+    logging.warning("⚠️ [V-REV] vwap_data.py 플러그인을 찾을 수 없습니다.")
 
 class ReversionStrategy:
     def __init__(self):
@@ -52,16 +60,8 @@ class ReversionStrategy:
         self.state_loaded = {}
         self.was_holding = {}
         
-        self.U_CURVE_WEIGHTS = [
-            0.0308, 0.0220, 0.0190, 0.0228, 0.0179, 0.0191, 0.0199, 0.0190, 0.0187, 0.0213,
-            0.0216, 0.0234, 0.0231, 0.0210, 0.0205, 0.0252, 0.0225, 0.0228, 0.0238, 0.0229,
-            0.0259, 0.0284, 0.0331, 0.0385, 0.0400, 0.0461, 0.0553, 0.0620, 0.0750, 0.1584
-        ]
+        # MODIFIED: [V40.XX] 하드코딩된 self.U_CURVE_WEIGHTS 배열 전면 소각 완료
 
-    # NEW: [자정 경계 스냅샷/캐시 증발(Cinderella) 타임 패러독스 완벽 방어]
-    # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
-    # 04:05 EST 통합 스케줄러 기상 전까지는 논리적 거래일을 전날(T-1)로 강제 락온
-    # AttributeError 방지를 위해 정수(hour/minute) 단위 비교
     def _get_logical_date_str(self):
         now_est = datetime.now(ZoneInfo('America/New_York'))
         if now_est.hour < 4 or (now_est.hour == 4 and now_est.minute < 5):
@@ -200,8 +200,6 @@ class ReversionStrategy:
 
     # 🚨 [V30.07] market_type 파라미터 추가 (기본값 "REG")
     def get_dynamic_plan(self, ticker, curr_p, prev_c, current_weight, vwap_status, min_idx, alloc_cash, q_data, is_snapshot_mode=False, market_type="REG"):
-        min_idx = int(min_idx) if min_idx is not None else -1
-
         self._load_state_if_needed(ticker)
 
         valid_q_data = [item for item in q_data if float(item.get('price', 0.0)) > 0]
@@ -227,17 +225,23 @@ class ReversionStrategy:
 
         cached_plan = self.load_daily_snapshot(ticker)
         
-        # 🚨 [V30.07 팩트 수술] 0주 새출발 세션 팩트 절대 락온
         if is_snapshot_mode:
             is_zero_start_session = (total_q == 0)
         else:
             is_zero_start_session = cached_plan.get("is_zero_start", cached_plan.get("snapshot_total_q", cached_plan.get("total_q", -1)) == 0) if cached_plan else (total_q == 0)
 
-        # 🚨 MODIFIED: [V29.09 수술] 0주 팩트 스캔 시 낡은 스냅샷 디커플링 락온
-        if not is_snapshot_mode and min_idx < 0:
+        # NEW: [V40.XX] 동적 U-Curve 30분 재정규화 파이프라인 세팅
+        profile = VWAP_PROFILES.get(ticker, {})
+        target_keys = [f"15:{str(m).zfill(2)}" for m in range(30, 60)]
+        total_target_vol = sum(profile.get(k, 0.0) for k in target_keys)
+        
+        now_est = datetime.now(ZoneInfo('America/New_York'))
+        time_str = now_est.strftime('%H:%M')
+
+        # 🚨 MODIFIED: [V40.XX 수술] min_idx가 아닌 time_str 매핑으로 VWAP 가동/대기 판별
+        if not is_snapshot_mode and time_str not in target_keys:
             if cached_plan:
                 if total_q == 0:
-                    # 팩트 실잔고가 0주인데 스냅샷이 유령 매수/매도 지시를 들고 있다면 100% 무시하고 동적 덮어쓰기
                     p1_trigger_fact = round(prev_c / 0.935, 2)
                     p2_trigger_fact = round(prev_c * 0.999, 2)
                     b1_budget = alloc_cash * 0.5
@@ -274,19 +278,18 @@ class ReversionStrategy:
                     cached_plan["snapshot_total_q"] = cached_plan.get("snapshot_total_q", cached_plan.get("total_q", 0)) 
                     cached_plan["total_q"] = total_q
                 
-                # 🚨 [V30.07 팩트 수술] 0주 새출발 세션 시 정규장 매도 영구 동결
                 if is_zero_start_session and market_type != "AFTER":
                     cached_plan["orders"] = [o for o in cached_plan.get("orders", []) if o.get("side") != "SELL"]
                     
                 return cached_plan
 
-        if min_idx < 0 or min_idx >= 30:
+        # 정규장 30분 미만 & VWAP 구간 밖일 경우 HOLD
+        if time_str not in target_keys:
             if not vwap_status.get('is_strong_up') and not vwap_status.get('is_strong_down'):
                 return {"orders": [], "trigger_loc": False, "total_q": total_q}
 
         if is_zero_start_session or total_q == 0:
             side = "BUY"
-            # 🚨 MODIFIED: [V29.09 수술] 0주 새출발 타점 역배선 팩트 교정
             p1_trigger = round(prev_c / 0.935, 2)
             p2_trigger = round(prev_c * 0.999, 2)
         else:
@@ -354,10 +357,9 @@ class ReversionStrategy:
                 "orders": orders, 
                 "trigger_loc": True, 
                 "total_q": total_q,
-                "is_zero_start": is_zero_start_session # 🚨 팩트 박제
+                "is_zero_start": is_zero_start_session
             }
             
-            # 🚨 [V30.07 팩트 수술] 0주 새출발 세션 시 정규장 매도 영구 동결
             if is_zero_start_session and market_type != "AFTER":
                 plan_result["orders"] = [o for o in plan_result.get("orders", []) if o.get("side") != "SELL"]
             
@@ -366,11 +368,18 @@ class ReversionStrategy:
                 
             return plan_result
 
-        rem_weight = sum(self.U_CURVE_WEIGHTS[min_idx:])
-        slice_ratio_sell = current_weight / rem_weight if rem_weight > 0 else 1.0
-        
-        total_weight = sum(self.U_CURVE_WEIGHTS)
-        slice_ratio_buy = current_weight / total_weight if total_weight > 0 else 1.0
+        # NEW: [V40.XX] V-REV 동적 재정규화 분할 연산 파이프라인
+        rem_weight = 0.0
+        if time_str in target_keys:
+            start_idx = target_keys.index(time_str)
+            rem_vol = sum(profile.get(k, 0.0) for k in target_keys[start_idx:])
+            rem_weight = (rem_vol / total_target_vol) if total_target_vol > 0 else (30 - start_idx) / 30.0
+            slice_ratio_sell = current_weight / rem_weight if rem_weight > 0 else 1.0
+        else:
+            slice_ratio_sell = 0.0
+
+        # current_weight는 이미 30분 총합 대비 비율로 들어오므로 별도의 total_weight 나눗셈이 필요 없음
+        slice_ratio_buy = current_weight
 
         if side == "BUY":
             total_spent = float(self.executed["BUY_BUDGET"].get(ticker, 0.0))
@@ -422,7 +431,6 @@ class ReversionStrategy:
                     if alloc_upper > 0:
                         orders.append({"side": "SELL", "qty": alloc_upper, "price": trigger_upper})
 
-        # 🚨 [V30.07 팩트 수술] 0주 새출발 세션 시 정규장 매도 영구 동결
         if is_zero_start_session and market_type != "AFTER":
             orders = [o for o in orders if o.get("side") != "SELL"]
 

@@ -1,6 +1,7 @@
 # ==========================================================
 # [scheduler_sniper.py] - 🌟 100% 분할 캡슐화 완성본 (V32.00) 🌟
 # 🚨 MODIFIED: [V32.00 그랜드 수술] 불필요한 AVWAP 동적 파라미터 배선 전면 소각 및 클린 라우팅 적용
+# NEW: [V40.XX 옴니 매트릭스] 전역 국면 데이터(regime_data) 수신 및 스나이퍼(AVWAP/V14) 듀얼 라우팅 락온 탑재
 # ==========================================================
 import logging
 import datetime
@@ -49,6 +50,9 @@ async def scheduled_sniper_monitor(context):
     
     app_data = context.job.data
     cfg, broker, strategy, tx_lock = app_data['cfg'], app_data['broker'], app_data['strategy'], app_data['tx_lock']
+    
+    # NEW: [V40.XX] main.py에서 10:20 EST에 판별 및 캐싱한 옴니 매트릭스 국면 데이터 추출
+    regime_data = app_data.get('regime_data')
     
     base_map = app_data.get('base_map', {'SOXL': 'SOXX', 'TQQQ': 'QQQ'})
     chat_id = context.job.chat_id
@@ -158,7 +162,7 @@ async def scheduled_sniper_monitor(context):
                         "cooldown_active": tracking_cache.get(f"AVWAP_COOLDOWN_{t}", False)
                     }
                     
-                    # MODIFIED: [V32.00] 불필요한 동적 파라미터 주입 소각 완료
+                    # MODIFIED: [V40.XX 옴니 매트릭스] 국면 데이터(regime_data) 파이프라인 주입 완료
                     decision = strategy.get_avwap_decision(
                         base_ticker=target_base,
                         exec_ticker=t,
@@ -171,7 +175,8 @@ async def scheduled_sniper_monitor(context):
                         context_data=ctx_data,
                         df_1min_base=df_1min_base,
                         now_est=now_est,
-                        avwap_state=avwap_state_dict
+                        avwap_state=avwap_state_dict,
+                        regime_data=regime_data  # NEW
                     )
                     
                     action = decision.get("action")
@@ -400,6 +405,14 @@ async def scheduled_sniper_monitor(context):
                 limit_p = res.get("limit_price", 0.0)
 
                 is_rev = (cfg.get_version(t) == "V_REV")
+
+                # NEW: [V40.XX 옴니 매트릭스] 일반 하방 스나이퍼(V14) 듀얼 모멘텀 락온 필터 적용
+                if action == "BUY" and not is_rev and regime_data is not None:
+                    # 스나이퍼는 신규 진입(BUY)을 담당하므로 0주 기준으로 필터링 검증
+                    omni_filter = strategy.apply_omni_matrix_filter(t, 0, regime_data)
+                    if not omni_filter["allow_buy"]:
+                        action = "HOLD"
+                        reason = f"⛔ 옴니 매트릭스 진입 차단: {omni_filter['msg']}"
 
                 if action == "BUY" and not is_rev and not sniper_buy_locked and master_switch != "UP_ONLY":
                     qty = res.get("qty", 0)

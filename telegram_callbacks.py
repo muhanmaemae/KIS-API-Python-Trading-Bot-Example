@@ -19,6 +19,7 @@
 # NEW: [V29.04] queue_ledger.queues 객체 직접 참조 런타임 붕괴 데드코드 전면 소각 및 다이렉트 I/O 멱등성 방어막 이식
 # MODIFIED: [V30.09 핫픽스] 잔존 데드코드(pytz) 영구 소각 및 ZoneInfo 이식을 통한 타임존 무결성 락온 통일
 # 🚨 MODIFIED: [V32.00] 12차 백테스트 팩트 반영. 불필요해진 AVWAP 동적 파라미터(TARGET_SET, GAP_SET) 콜백 라우팅 전면 소각 완료.
+# NEW: [V40.XX 옴니 매트릭스] SOXL/SOXS 듀얼 모멘텀 티커 스위칭 완벽 분기 및 V-REV/AVWAP 권한 개방 완료
 # ==========================================================
 import logging
 import datetime
@@ -585,8 +586,9 @@ class TelegramCallbacks:
             ticker = data[2]
             current_ver = self.cfg.get_version(ticker)
             
-            if new_ver == "V_REV" and ticker != "SOXL":
-                await update.callback_query.answer("⚠️ V-REV 모드는 SOXL 전용 아키텍처입니다. 전환이 차단되었습니다.", show_alert=True)
+            # MODIFIED: [V40.XX] SOXS 티커에 V-REV 권한 부여
+            if new_ver == "V_REV" and ticker not in ["SOXL", "SOXS"]:
+                await update.callback_query.answer("⚠️ V-REV 모드는 SOXL 및 SOXS 전용 아키텍처입니다. 전환이 차단되었습니다.", show_alert=True)
                 return
 
             async with self.tx_lock:
@@ -643,8 +645,9 @@ class TelegramCallbacks:
             
             target_ver = "V_REV" if mode_type in ["AUTO", "MANUAL"] else "V14"
 
-            if target_ver == "V_REV" and ticker != "SOXL":
-                await update.callback_query.answer("⚠️ V-REV 모드는 SOXL 전용 아키텍처입니다. 전환이 차단되었습니다.", show_alert=True)
+            # MODIFIED: [V40.XX] SOXS 티커에 V-REV 전환 권한 부여
+            if target_ver == "V_REV" and ticker not in ["SOXL", "SOXS"]:
+                await update.callback_query.answer("⚠️ V-REV 모드는 SOXL 및 SOXS 전용 아키텍처입니다. 전환이 차단되었습니다.", show_alert=True)
                 return
 
             async with self.tx_lock:
@@ -702,7 +705,6 @@ class TelegramCallbacks:
                     
                 await query.edit_message_text(f"✅ <b>[{ticker}]</b> 퀀트 엔진이 <b>V14 무매4</b> 모드로 전환되었습니다.\n▫️ <b>집행 방식:</b> {mode_txt}\n▫️ /sync 명령어에서 변경된 지시서를 확인하세요.", parse_mode='HTML')
 
-        # 🚨 MODIFIED: [V32.00] TARGET_SET 및 GAP_SET 라우터 전면 소각 (하드코딩화)
         elif action == "AVWAP":
             if sub == "MENU":
                 ticker = data[2]
@@ -785,8 +787,19 @@ class TelegramCallbacks:
             await query.edit_message_text(f"✅ <b>[{ticker}]</b> 상방 스나이퍼 모드 변경 완료: {'🎯 ON (가동중)' if mode_val == 'ON' else '⚪ OFF (대기중)'}", parse_mode='HTML')
             
         elif action == "TICKER":
-            self.cfg.set_active_tickers([sub] if sub != "ALL" else ["SOXL", "TQQQ"])
-            await query.edit_message_text(f"✅ 운용 종목 변경: {sub}", parse_mode='HTML')
+            # MODIFIED: [V40.XX 옴니 매트릭스] 쉼표(,) 딜리미터를 이용한 다중 티커(SOXL+SOXS) 락온 지원
+            if sub == "ALL":
+                target_tickers = ["SOXL", "TQQQ"]
+                msg_txt = "SOXL + TQQQ 통합"
+            elif "," in sub:
+                target_tickers = sub.split(",")
+                msg_txt = " + ".join(target_tickers) + " 듀얼 모멘텀"
+            else:
+                target_tickers = [sub]
+                msg_txt = sub + " 전용"
+                
+            self.cfg.set_active_tickers(target_tickers)
+            await query.edit_message_text(f"✅ <b>[운용 종목 락온 완료]</b>\n▫️ <b>{msg_txt}</b> 모드로 전환되었습니다.\n▫️ /sync를 눌러 확인하십시오.", parse_mode='HTML')
             
         elif action == "SEED":
             ticker = data[2]
@@ -812,4 +825,3 @@ class TelegramCallbacks:
             
             desc = "숫자만 입력하세요.\n(예: 액면분할 시 1주가 10주가 되었다면 10 입력, 10주가 1주로 병합되었다면 0.1 입력)" if sub == "STOCK_SPLIT" else "숫자만 입력하세요."
             await context.bot.send_message(chat_id, f"✏️ <b>[{ticker}] {ko_name}</b>를 설정합니다.\n{desc}", parse_mode='HTML')
-

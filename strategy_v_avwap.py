@@ -8,6 +8,7 @@
 # 🚨 MODIFIED: [V32.00 백테스트 팩트 락온] 동적 파라미터 전면 소각. Gap < 0 시 무조건 스윕 및 +2.0% 고정 익절 하드코딩.
 # 🚨 MODIFIED: [V32.00 방어막] 2차 손절망(재진입) 환각을 영구 차단하는 13계명 백신 주석 이식 완료.
 # NEW: [자정 경계 스냅샷/캐시 증발(Cinderella) 타임 패러독스 완벽 방어] 런타임 붕괴(AttributeError) 차단 정수 기반 락온
+# NEW: [V40.XX 옴니 매트릭스] SOXS(인버스) 티커 듀얼 모멘텀 완벽 대응을 위한 양방향(Inverted) 논리 거울 엔진 탑재
 # ==========================================================
 import logging
 import datetime
@@ -26,9 +27,6 @@ class VAvwapHybridPlugin:
         self.base_stop_loss_pct = 0.02  # 레버리지 3배 환산 시 -6.0% 하드스탑 고정
         self.base_target_pct = 0.02     # 🚨 [프롬프트 락온] 레버리지 3배 환산 시 +2.0% 고정 익절 (백테스트 동기화)
         
-    # NEW: [자정 경계 스냅샷/캐시 증발(Cinderella) 타임 패러독스 완벽 방어]
-    # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
-    # AttributeError 방지를 위해 정수(hour/minute) 단위 비교
     def _get_logical_date_str(self, now_est):
         if now_est.hour < 4 or (now_est.hour == 4 and now_est.minute < 5):
             target_date = now_est - datetime.timedelta(days=1)
@@ -69,8 +67,6 @@ class VAvwapHybridPlugin:
     def fetch_macro_context(self, base_ticker):
         try:
             tkr = yf.Ticker(base_ticker)
-            
-            # 전일 VWAP 산출을 위해 5일 치 1분봉 데이터 로드
             df_1m = tkr.history(period="5d", interval="1m", prepost=False, timeout=5)
             
             prev_vwap = 0.0
@@ -79,7 +75,6 @@ class VAvwapHybridPlugin:
             est = ZoneInfo('America/New_York')
             now_est = datetime.datetime.now(est)
             
-            # MODIFIED: [타임 패러독스 방어] 04:05 EST 이전은 전날로 간주
             if now_est.hour < 4 or (now_est.hour == 4 and now_est.minute < 5):
                 today_est = (now_est - datetime.timedelta(days=1)).date()
             else:
@@ -97,13 +92,11 @@ class VAvwapHybridPlugin:
                     last_date = df_past_1m.index.date[-1]
                     df_prev_day = df_past_1m[df_past_1m.index.date == last_date].copy()
                     
-                    # 정규장 시간 핀셋 필터링 (09:30 ~ 15:59)
                     df_prev_day = df_prev_day.between_time('09:30', '15:59')
                     
                     if not df_prev_day.empty:
                         prev_close = float(df_prev_day['Close'].iloc[-1])
                         
-                        # 전일 정통 VWAP 공식 적용 (누적 거래대금 / 누적 거래량)
                         df_prev_day['tp'] = (df_prev_day['High'].astype(float) + df_prev_day['Low'].astype(float) + df_prev_day['Close'].astype(float)) / 3.0
                         df_prev_day['vol'] = df_prev_day['Volume'].astype(float)
                         df_prev_day['vol_tp'] = df_prev_day['tp'] * df_prev_day['vol']
@@ -114,7 +107,6 @@ class VAvwapHybridPlugin:
                         else:
                             prev_vwap = prev_close
 
-            # 10시 이전 RVOL 스파이크 감지용 30분봉 데이터는 유지
             df_30m = tkr.history(period="60d", interval="30m", timeout=5)
             avg_vol_20 = 0.0
 
@@ -145,7 +137,6 @@ class VAvwapHybridPlugin:
             logging.error(f"🚨 [V_AVWAP] YF 기초자산 매크로 컨텍스트 추출 실패 ({base_ticker}): {e}")
             return None
 
-    # MODIFIED: [V32.00] 동적 파라미터 소각 및 하드코딩 룰 적용
     def get_decision(self, base_ticker=None, exec_ticker=None, base_curr_p=0.0, exec_curr_p=0.0, base_day_open=0.0, avwap_avg_price=0.0, avwap_qty=0, avwap_alloc_cash=0.0, context_data=None, df_1min_base=None, now_est=None, avwap_state=None, **kwargs):
         
         df_1min_base = df_1min_base if df_1min_base is not None else kwargs.get('base_df')
@@ -176,8 +167,10 @@ class VAvwapHybridPlugin:
 
         base_vwap = base_curr_p
         vwap_success = False 
-        
         rolling_tp = base_curr_p
+        
+        # NEW: [V40.XX 옴니 매트릭스] 인버스(Inverse) 종목 여부 판독
+        is_inverse = exec_ticker.upper() in ["SOXS", "SQQQ", "SPXU"]
         
         if df_1min_base is not None and not df_1min_base.empty:
             try:
@@ -191,7 +184,6 @@ class VAvwapHybridPlugin:
                     base_vwap = df['vol_tp'].sum() / cum_vol
                     vwap_success = True
                 
-                # 롤링 5분 TP 갭 스캔 엔진
                 if len(df) >= 5:
                     recent_5 = df.tail(5)
                     high_5m = float(recent_5['high'].max())
@@ -243,17 +235,13 @@ class VAvwapHybridPlugin:
                 logging.error("🚨 [V_AVWAP] safe_avg <= 0: 가격 데이터 결측, 하드스탑 강제 집행")
                 return _build_res('SELL', 'CORRUPT_PRICE_HARD_STOP', qty=safe_qty, target_price=0.0)
                 
+            # 익절 및 손절 연산은 계좌 실제 수익률을 추적하므로 SOXL/SOXS 구분 없이 팩트 기반 공통 연산
             exec_return = (exec_curr_p - safe_avg) / safe_avg
             base_equivalent_return = exec_return / self.leverage
             
-            # 🚨 [AI 에이전트 절대 주의 - 13계명 위반 방어막]
-            # 14차 백테스트의 2차 손절망(-3.0%) 재진입(다중 손절) 로직은 
-            # "손절 피격 시 당일 매매 영구 동결(Daily Stop Lock-down)"이라는 13계명을 정면 위반하는 환각입니다.
-            # 단 1회의 -6.0% 하드스탑 도달 시 묻지도 따지지도 않고 SHUTDOWN 반환하여 당일 락온을 보장하십시오.
             if base_equivalent_return <= -self.base_stop_loss_pct:
                 return _build_res('SHUTDOWN', 'HARD_STOP_손절(-6.0%)_당일영구동결', qty=safe_qty, target_price=0.0)
             
-            # 🚨 [프롬프트 절대 락온] 다중 출장 고정 타겟 (+2.0% 도달 시 즉각 전량 익절)
             if exec_return >= self.base_target_pct:
                 reason = f'MULTI_STRIKE_TAKE(+2.0%)'
                 return _build_res('SELL', reason, qty=safe_qty, target_price=0.0)
@@ -273,28 +261,41 @@ class VAvwapHybridPlugin:
         prev_c = context_data.get('prev_close', 0.0)
         avg_vol_20 = context_data.get('avg_vol_20', 0.0)
 
-        # 🚨 [진성 상승장 필터] 전일 정규장 VWAP 대비 당일 실시간 VWAP이 낮을 경우 강제 관망
-        if prev_vwap > 0 and base_vwap < prev_vwap:
-            return _build_res('WAIT', f'당일VWAP_전일대비_하락_관망(당일:${base_vwap:.2f} < 전일:${prev_vwap:.2f})')
+        # 🚨 NEW: [V40.XX] 인버스/롱 양방향 거울 엔진 적용 (추세 필터)
+        if prev_vwap > 0:
+            if not is_inverse and base_vwap < prev_vwap:
+                return _build_res('WAIT', f'상승장_조건미달(당일:${base_vwap:.2f} < 전일:${prev_vwap:.2f})')
+            elif is_inverse and base_vwap > prev_vwap:
+                return _build_res('WAIT', f'하락장_조건미달(당일:${base_vwap:.2f} > 전일:${prev_vwap:.2f})')
 
-        # 기초자산 시가 갭 하락 차단
-        if base_day_open <= prev_c * (1 - 0.0067):
-            return _build_res('SHUTDOWN', '기초자산_시가_갭하락_영구동결')
+        # 🚨 NEW: [V40.XX] 인버스/롱 양방향 거울 엔진 적용 (시가 갭 차단)
+        if not is_inverse and base_day_open <= prev_c * (1 - 0.0067):
+            return _build_res('SHUTDOWN', '기초자산_시가_하락갭_영구동결')
+        elif is_inverse and base_day_open >= prev_c * (1 + 0.0067):
+            return _build_res('SHUTDOWN', '기초자산_시가_상승갭_영구동결')
             
         if curr_time >= time_1000:
-            if avg_vol_20 > 0 and base_current_30m_vol >= (avg_vol_20 * 2.0) and base_curr_p < base_vwap:
-                return _build_res('SHUTDOWN', '기초자산_RVOL_스파이크_영구동결')
+            if avg_vol_20 > 0 and base_current_30m_vol >= (avg_vol_20 * 2.0):
+                # 🚨 NEW: [V40.XX] 인버스/롱 양방향 거울 엔진 적용 (RVOL 스파이크 방향 차단)
+                if not is_inverse and base_curr_p < base_vwap:
+                    return _build_res('SHUTDOWN', '기초자산_RVOL_하방스파이크_영구동결')
+                elif is_inverse and base_curr_p > base_vwap:
+                    return _build_res('SHUTDOWN', '기초자산_RVOL_상방스파이크_영구동결')
 
         if cooldown_active:
-            # 🚨 자연 쿨다운 적용: 갭 해소 시(-0.2% 이상 회복) 대기 해제
-            if gap_pct >= -0.2:
+            # 🚨 NEW: [V40.XX] 인버스/롱 양방향 거울 엔진 적용 (쿨다운 해제 조건)
+            if not is_inverse and gap_pct >= -0.2:
+                return _build_res('COOLDOWN_RELEASE', 'VWAP_회복_재장전_완료')
+            elif is_inverse and gap_pct <= 0.2:
                 return _build_res('COOLDOWN_RELEASE', 'VWAP_회복_재장전_완료')
             else:
                 return _build_res('WAIT', f'다중타격_자연쿨다운_대기중 (현재갭 {gap_pct:.2f}%)')
                 
         if time_1000 <= curr_time <= time_1500:
-            # 🚨 [프롬프트 절대 락온] 단돈 0.01%라도 하향 돌파(음수 갭) 시 즉각 무지성 시장가 스윕 타격
-            if gap_pct < 0:
+            # 🚨 NEW: [V40.XX] 인버스/롱 양방향 거울 엔진 적용 (타격 트리거 조건 반전)
+            trigger_condition = (gap_pct < 0) if not is_inverse else (gap_pct > 0)
+            
+            if trigger_condition:
                 if exec_curr_p > 0 and avwap_alloc_cash > 0:
                     buy_qty = int(math.floor(avwap_alloc_cash / exec_curr_p))
                     if buy_qty > 0:

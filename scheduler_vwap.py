@@ -3,6 +3,7 @@
 # 🚨 NEW: [V31.00] V-REV 장막판 갭 스위칭(Gap Hijacking) 오버라이드 엔진 탑재 완료
 # 🚨 MODIFIED: [V32.01 핫픽스] V14 VWAP 파라미터 시그니처(prev_close) 교정 및 LOC 사용자 강제 납치 방어막 이식
 # 🚨 MODIFIED: [V32.02 핫픽스] 0주 새출발 VWAP 매수 실종 방어를 위한 가격 상한제 바이패스(Bypass) 락온 이식
+# NEW: [V40.XX 옴니 매트릭스] U-Curve 30분 동적 재정규화 및 듀얼 모멘텀(regime_data) BUY 락다운 이식
 # ==========================================================
 import logging
 import datetime
@@ -107,6 +108,9 @@ async def scheduled_vwap_trade(context):
     chat_id = context.job.chat_id
     base_map = app_data.get('base_map', {'SOXL': 'SOXX', 'TQQQ': 'QQQ'})
     
+    # NEW: [V40.XX] 옴니 매트릭스 듀얼 라우팅용 전역 국면 데이터 파싱
+    regime_data = app_data.get('regime_data')
+    
     vwap_cache = app_data.setdefault('vwap_cache', {})
     today_str = now_est.strftime('%Y%m%d')
     
@@ -114,18 +118,6 @@ async def scheduled_vwap_trade(context):
         vwap_cache.clear()
         vwap_cache['date'] = today_str
 
-    U_CURVE_WEIGHTS = [
-        0.0308, 0.0220, 0.0190, 0.0228, 0.0179, 0.0191, 0.0199, 0.0190, 0.0187, 0.0213,
-        0.0216, 0.0234, 0.0231, 0.0210, 0.0205, 0.0252, 0.0225, 0.0228, 0.0238, 0.0229,
-        0.0259, 0.0284, 0.0331, 0.0385, 0.0400, 0.0461, 0.0553, 0.0620, 0.0750, 0.1584
-    ]
-    
-    minutes_to_close = int(max(0, (market_close - now_est).total_seconds()) / 60)
-    min_idx = 33 - minutes_to_close
-    if min_idx < 0: min_idx = 0
-    if min_idx > 29: min_idx = 29
-    current_weight = U_CURVE_WEIGHTS[min_idx]
-        
     async def _do_vwap():
         async with tx_lock:
             cash, holdings = await asyncio.to_thread(broker.get_account_balance)
@@ -133,13 +125,38 @@ async def scheduled_vwap_trade(context):
             
             safe_holdings = holdings if isinstance(holdings, dict) else {}
             
+            # 구 레거시 호환 및 남은 예산 계산(split)용 min_idx 유지
+            minutes_to_close = int(max(0, (market_close - now_est).total_seconds()) / 60)
+            min_idx = 33 - minutes_to_close
+            if min_idx < 0: min_idx = 0
+            if min_idx > 29: min_idx = 29
+            
             for t in cfg.get_active_tickers():
                 version = cfg.get_version(t)
                 is_manual_vwap = getattr(cfg, 'get_manual_vwap_mode', lambda x: False)(t)
-                is_zero_start_session = False # NEW: 0주 새출발 팩트 캐싱
+                is_zero_start_session = False 
 
                 if version == "V_REV" and is_manual_vwap:
                     continue
+
+                # NEW: [V40.XX 옴니 매트릭스] 티커별 390분 팩트 데이터 추출 및 장막판 30분 동적 재정규화
+                try:
+                    profile = cfg.get_vwap_profile(t) if hasattr(cfg, 'get_vwap_profile') else {}
+                except Exception as e:
+                    logging.error(f"🚨 [{t}] VWAP 프로파일 로드 실패: {e}")
+                    profile = {}
+                    
+                target_keys = [f"15:{str(m).zfill(2)}" for m in range(30, 60)]
+                total_target_vol = sum(profile.get(k, 0.0) for k in target_keys)
+                time_str = now_est.strftime('%H:%M')
+                
+                # 15:30 ~ 15:59 구간 내에서는 합이 1.0(100%)이 되도록 재정규화
+                # 웜업 구간(15:27~15:29)에서는 0.0을 부여하여 섣부른 매수를 수학적으로 원천 차단
+                if time_str in target_keys:
+                    raw_weight = profile.get(time_str, 0.0)
+                    current_weight = (raw_weight / total_target_vol) if total_target_vol > 0 else (1.0 / 30.0)
+                else:
+                    current_weight = 0.0
 
                 if version == "V_REV" or (version == "V14" and is_manual_vwap):
                     if not vwap_cache.get(f"REV_{t}_nuked"):
@@ -194,7 +211,7 @@ async def scheduled_vwap_trade(context):
                         
                         cached_plan = strategy_rev.load_daily_snapshot(t)
                         is_zero_start = (cached_plan and cached_plan.get("total_q", -1) == 0)
-                        is_zero_start_session = is_zero_start # NEW: 전역 스냅샷 상태 락온
+                        is_zero_start_session = is_zero_start 
                         virtual_q_data = [] if is_zero_start else q_data
                         
                         strategy_rev._load_state_if_needed(t)
@@ -358,39 +375,46 @@ async def scheduled_vwap_trade(context):
                         target_orders = []
                         
                         if is_gap_switch and current_regime == "BUY" and not vwap_cache.get(f"REV_{t}_gap_hijack_fired"):
-                            base_tkr = base_map.get(t, 'SOXX')
-                            base_curr_p = float(await asyncio.to_thread(broker.get_current_price, base_tkr) or 0.0)
-                            try:
-                                df_1min_base = await asyncio.to_thread(broker.get_1min_candles_df, base_tkr)
-                                if df_1min_base is not None and not df_1min_base.empty:
-                                    df_b = df_1min_base.copy()
-                                    df_b['tp'] = (df_b['high'].astype(float) + df_b['low'].astype(float) + df_b['close'].astype(float)) / 3.0
-                                    df_b['vol'] = df_b['volume'].astype(float)
-                                    df_b['vol_tp'] = df_b['tp'] * df_b['vol']
-                                    c_vol = df_b['vol'].sum()
-                                    base_vwap = df_b['vol_tp'].sum() / c_vol if c_vol > 0 else base_curr_p
-                                    
-                                    gap_pct = ((base_curr_p - base_vwap) / base_vwap * 100.0) if base_vwap > 0 else 0.0
-                                    
-                                    if gap_pct <= gap_thresh:
-                                        total_spent = float(strategy_rev.executed["BUY_BUDGET"].get(t, 0.0))
-                                        rem_budget = max(0.0, rev_daily_budget - total_spent)
+                            # NEW: [V40.XX] 옴니 매트릭스 갭 스위칭(BUY) 허가 100% 검증 방어막
+                            omni_filter = {"allow_buy": True}
+                            if regime_data is not None:
+                                current_qty_for_filter = int(float(safe_holdings.get(t, {}).get('qty', 0)))
+                                omni_filter = strategy.apply_omni_matrix_filter(t, current_qty_for_filter, regime_data)
+                                
+                            if omni_filter["allow_buy"]:
+                                base_tkr = base_map.get(t, 'SOXX')
+                                base_curr_p = float(await asyncio.to_thread(broker.get_current_price, base_tkr) or 0.0)
+                                try:
+                                    df_1min_base = await asyncio.to_thread(broker.get_1min_candles_df, base_tkr)
+                                    if df_1min_base is not None and not df_1min_base.empty:
+                                        df_b = df_1min_base.copy()
+                                        df_b['tp'] = (df_b['high'].astype(float) + df_b['low'].astype(float) + df_b['close'].astype(float)) / 3.0
+                                        df_b['vol'] = df_b['volume'].astype(float)
+                                        df_b['vol_tp'] = df_b['tp'] * df_b['vol']
+                                        c_vol = df_b['vol'].sum()
+                                        base_vwap = df_b['vol_tp'].sum() / c_vol if c_vol > 0 else base_curr_p
                                         
-                                        ask_price = float(await asyncio.to_thread(broker.get_ask_price, t) or 0.0)
-                                        exec_price = ask_price if ask_price > 0 else curr_p
+                                        gap_pct = ((base_curr_p - base_vwap) / base_vwap * 100.0) if base_vwap > 0 else 0.0
                                         
-                                        buy_qty = int(math.floor(rem_budget / exec_price))
-                                        
-                                        if buy_qty > 0:
-                                            target_orders = [{'side': 'BUY', 'qty': buy_qty, 'price': exec_price, 'type': 'LIMIT', 'desc': '갭 스위치 스윕'}]
-                                            vwap_cache[f"REV_{t}_gap_hijack_fired"] = True
+                                        if gap_pct <= gap_thresh:
+                                            total_spent = float(strategy_rev.executed["BUY_BUDGET"].get(t, 0.0))
+                                            rem_budget = max(0.0, rev_daily_budget - total_spent)
                                             
-                                            msg = f"⚡ <b>[{t}] V-REV 장막판 갭 스위칭 (Gap Hijack) 발동!</b>\n"
-                                            msg += f"▫️ 기초자산({base_tkr}) VWAP 이탈률(<b>{gap_pct:+.2f}%</b>)이 임계치(<b>{gap_thresh}%</b>)를 하향 돌파했습니다.\n"
-                                            msg += f"▫️ VWAP 타임 슬라이싱 스케줄을 즉각 파기하고, 잔여 예산 100%를 매도 1호가로 전량 스윕(Sweep) 타격합니다!"
-                                            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
-                            except Exception as e:
-                                logging.error(f"🚨 갭 스위칭 기초자산 스캔 에러: {e}")
+                                            ask_price = float(await asyncio.to_thread(broker.get_ask_price, t) or 0.0)
+                                            exec_price = ask_price if ask_price > 0 else curr_p
+                                            
+                                            buy_qty = int(math.floor(rem_budget / exec_price))
+                                            
+                                            if buy_qty > 0:
+                                                target_orders = [{'side': 'BUY', 'qty': buy_qty, 'price': exec_price, 'type': 'LIMIT', 'desc': '갭 스위치 스윕'}]
+                                                vwap_cache[f"REV_{t}_gap_hijack_fired"] = True
+                                                
+                                                msg = f"⚡ <b>[{t}] V-REV 장막판 갭 스위칭 (Gap Hijack) 발동!</b>\n"
+                                                msg += f"▫️ 기초자산({base_tkr}) VWAP 이탈률(<b>{gap_pct:+.2f}%</b>)이 임계치(<b>{gap_thresh}%</b>)를 하향 돌파했습니다.\n"
+                                                msg += f"▫️ VWAP 타임 슬라이싱 스케줄을 즉각 파기하고, 잔여 예산 100%를 매도 1호가로 전량 스윕(Sweep) 타격합니다!"
+                                                await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
+                                except Exception as e:
+                                    logging.error(f"🚨 갭 스위칭 기초자산 스캔 에러: {e}")
 
                         if not target_orders:
                             rev_plan = None
@@ -431,7 +455,6 @@ async def scheduled_vwap_trade(context):
                         
                         v14_vwap_plugin = strategy.v14_vwap_plugin
                         
-                        # NEW: 0주 새출발 상태 팩트 캐싱
                         cached_snap_v14 = v14_vwap_plugin.load_daily_snapshot(t)
                         if cached_snap_v14:
                             is_zero_start_session = cached_snap_v14.get("is_zero_start", cached_snap_v14.get("total_q", -1) == 0)
@@ -449,6 +472,13 @@ async def scheduled_vwap_trade(context):
                         
                         target_price = o['price']
                         side = o['side']
+
+                        # NEW: [V40.XX 옴니 매트릭스] 매수(BUY) 지시 듀얼 모멘텀 락온 필터 (SELL은 바이패스)
+                        if side == "BUY" and regime_data is not None:
+                            current_qty_for_filter = int(float(safe_holdings.get(t, {}).get('qty', 0)))
+                            omni_filter = strategy.apply_omni_matrix_filter(t, current_qty_for_filter, regime_data)
+                            if not omni_filter["allow_buy"]:
+                                continue # 국면에 어긋나는 VWAP 쪼개기 매수는 전면 Nuke 소각!
                         
                         ask_price = float(await asyncio.to_thread(broker.get_ask_price, t) or 0.0)
                         bid_price = float(await asyncio.to_thread(broker.get_bid_price, t) or 0.0)

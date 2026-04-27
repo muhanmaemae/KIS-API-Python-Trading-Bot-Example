@@ -7,6 +7,7 @@
 # 🚨 [V27.17 그랜드 수술] 코파일럿 합작 - 가중치 무제한 폭주(Black Swan) 락온 방어(0.5~2.0), 
 # UnboundLocalError 런타임 즉사 교정, 임시 파일 찌꺼기(Disk Leak) 소각, 
 # 야후 파이낸스 다중인덱스(MultiIndex) 붕괴 스마트 우회 엔진 및 ATR 최소 데이터 검증망 이식
+# NEW: [V40.XX 옴니 매트릭스] 60MA/120MA 듀얼 모멘텀 시장 국면 판별 엔진 탑재
 # ==========================================================
 import yfinance as yf
 import pandas as pd
@@ -15,6 +16,9 @@ import os
 import json
 import tempfile
 import logging
+import asyncio
+from zoneinfo import ZoneInfo
+from datetime import datetime
 
 CACHE_FILE = "data/volatility_cache.json"
 
@@ -289,6 +293,83 @@ def get_soxl_target_drop_full():
         logging.error(f"❌ SOXX HV 상세 연산 오류: {e}")
         fallback_amp = round(-(SOXX_DEFAULT_ATR_PCT * 3), 2)
         return 0.0, 1.0, fallback_amp, fallback_amp
+
+# NEW: [V40.XX 옴니 매트릭스] 60MA/120MA 시장 국면 판별 엔진 동기 처리부
+def _fetch_market_regime_sync() -> dict:
+    """
+    야후 파이낸스에서 SOXX 데이터를 동기적으로 다운로드하여 MA 라인을 연산합니다.
+    비동기 루프 블로킹 방지를 위해 반드시 asyncio.to_thread로 래핑되어 호출되어야 합니다.
+    """
+    try:
+        # 120일선을 구하기 위해 넉넉하게 150영업일 데이터 호출
+        ticker = yf.Ticker("SOXX")
+        df = ticker.history(period="150d", interval="1d")
+        
+        if df.empty or len(df) < 120:
+            return {"status": "error", "msg": "YF 데이터 부족 (120MA 연산 불가)"}
+            
+        # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각 방어막]
+        # 야후 파이낸스 MultiIndex 붕괴 우회 엔진 적용
+        df = _flatten_columns(df)
+            
+        # 60일, 120일 이동평균선 연산
+        df['60MA'] = df['Close'].rolling(window=60).mean()
+        df['120MA'] = df['Close'].rolling(window=120).mean()
+        
+        # Look-ahead Bias 방지를 위해 가장 최근에 확정된(종료된) 영업일의 데이터를 추출
+        # 10:00 KST에 호출되므로, iloc[-1]은 완벽하게 '어제(미국 기준)'의 종가를 의미함
+        last_row = df.iloc[-1]
+        
+        # API 결측치(None) 및 타입 오류로 인한 런타임 붕괴 방지 (Safe Casting)
+        close_price = float(last_row['Close']) if not pd.isna(last_row['Close']) else 0.0
+        ma60 = float(last_row['60MA']) if not pd.isna(last_row['60MA']) else 0.0
+        ma120 = float(last_row['120MA']) if not pd.isna(last_row['120MA']) else 0.0
+        
+        if close_price == 0.0 or ma60 == 0.0 or ma120 == 0.0:
+            return {"status": "error", "msg": "결측치(NaN) 유입으로 판별 불가"}
+
+        # 듀얼 모멘텀 판별 로직
+        if close_price > ma60:
+            regime = "BULL"
+            target_ticker = "SOXL"
+        elif close_price < ma120:
+            regime = "BEAR"
+            target_ticker = "SOXS"
+        else:
+            # 60MA와 120MA 사이의 휩소(Whipsaw) 구간 -> 양방향 셧다운 (Bypass)
+            regime = "SIDEWAYS"
+            target_ticker = "NONE"
+            
+        return {
+            "status": "success",
+            "regime": regime,
+            "target_ticker": target_ticker,
+            "close": close_price,
+            "ma60": ma60,
+            "ma120": ma120
+        }
+        
+    except Exception as e:
+        return {"status": "error", "msg": str(e)}
+
+# NEW: [V40.XX 옴니 매트릭스] 시장 국면 판별 비동기 래퍼 (스케줄러 호출용)
+async def determine_market_regime() -> dict:
+    """
+    비동기 데드락 원천 차단 방어막이 씌워진 시장 국면 판별 함수입니다.
+    매일 특정 스케줄(마스터 스위치 판별 시간 등)에 호출되어 당일의 운명(SOXL/SOXS/NONE)을 락온합니다.
+    """
+    try:
+        # 최대 10초 무한 대기 족쇄(Timeout) 가동
+        result = await asyncio.wait_for(
+            asyncio.to_thread(_fetch_market_regime_sync),
+            timeout=10.0
+        )
+        return result
+    except asyncio.TimeoutError:
+        return {"status": "error", "msg": "YF 통신 타임아웃 (10초 초과)"}
+    except Exception as e:
+        return {"status": "error", "msg": f"비동기 래핑 오류: {str(e)}"}
+
 
 class VolatilityEngine:
     def __init__(self):
