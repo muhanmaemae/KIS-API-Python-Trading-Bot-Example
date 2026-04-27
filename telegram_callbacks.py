@@ -14,15 +14,14 @@
 # MODIFIED: [V28.27] 수동 매도로 인한 0주 락온 디커플링 상태 감지 및 /reset 유도 방어막 추가
 # MODIFIED: [V28.32] 코파일럿 아키텍처 채택: V14 전용 상방 스나이퍼 로직 충돌 방지를 위한 V-REV 락다운 방어막 원상 복구
 # MODIFIED: [V28.33] TQQQ 등 타 종목의 V-REV 횡단 진입 맹점 100% 소각 (SOXL 하드웨어 락온 이식)
-# MODIFIED: [V29.00 NEW] AVWAP 조기 퇴근 모드 동적 렌더링 및 팝업 안내 UX 팩트 수술 완료
 # 🚨 [V29.02 UX 팩트 패치] "역사 목록으로 돌아가기(HIST:LIST)" 콜백 시 cmd_history 호출에 따른 런타임 즉사 맹점 소각. 동적 리스트 렌더링 엔진 단독 이식 완료.
 # 🚨 [V29.03 핫픽스] UnboundLocalError 런타임 즉사 유발 원흉(AVWAP 내부 로컬 임포트 섀도잉) 100% 소각 완료.
 # NEW: [V29.04] queue_ledger.queues 객체 직접 참조 런타임 붕괴 데드코드 전면 소각 및 다이렉트 I/O 멱등성 방어막 이식
 # MODIFIED: [V30.09 핫픽스] 잔존 데드코드(pytz) 영구 소각 및 ZoneInfo 이식을 통한 타임존 무결성 락온 통일
+# 🚨 MODIFIED: [V32.00] 12차 백테스트 팩트 반영. 불필요해진 AVWAP 동적 파라미터(TARGET_SET, GAP_SET) 콜백 라우팅 전면 소각 완료.
 # ==========================================================
 import logging
 import datetime
-# MODIFIED: [V30.09 핫픽스] LMT 오차 방어를 위해 pytz 적출 및 ZoneInfo 도입
 from zoneinfo import ZoneInfo
 import os
 import json
@@ -72,10 +71,33 @@ class TelegramCallbacks:
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE, controller):
         query = update.callback_query
         await query.answer()
+        chat_id = update.effective_chat.id
         data = query.data.split(":")
         action, sub = data[0], data[1] if len(data) > 1 else ""
 
-        if action == "QUEUE":
+        if action == "UPDATE":
+            if sub == "CONFIRM":
+                from plugin_updater import SystemUpdater
+                updater = SystemUpdater()
+                await query.edit_message_text("⏳ <b>[업데이트 승인됨]</b> GitHub 코드를 강제 페칭합니다...", parse_mode='HTML')
+                try:
+                    success, msg = await updater.pull_latest_code()
+                    import html
+                    safe_msg = html.escape(msg)
+                    if success:
+                        await query.edit_message_text(f"✅ <b>[업데이트 완료]</b> {safe_msg}\n\n🔄 데몬을 재가동합니다. 잠시 후 봇이 응답할 것입니다.", parse_mode='HTML')
+                        updater.restart_daemon()
+                    else:
+                        await query.edit_message_text(f"❌ <b>[업데이트 실패]</b>\n▫️ 사유: {safe_msg}", parse_mode='HTML')
+                except Exception as e:
+                    import html
+                    safe_err = html.escape(str(e))
+                    await query.edit_message_text(f"🚨 <b>[치명적 오류]</b> 프로세스 예외 발생: {safe_err}", parse_mode='HTML')
+
+            elif sub == "CANCEL":
+                await query.edit_message_text("❌ 자가 업데이트를 취소했습니다.", parse_mode='HTML')
+
+        elif action == "QUEUE":
             if sub == "VIEW":
                 ticker = data[2]
                 if getattr(self, 'queue_ledger', None):
@@ -140,14 +162,14 @@ class TelegramCallbacks:
             
             if emergency_qty > 0:
                 async with self.tx_lock:
-                    res = self.broker.send_order(ticker, "SELL", emergency_qty, 0.0, "MOC")
+                    res = await asyncio.to_thread(self.broker.send_order, ticker, "SELL", emergency_qty, 0.0, "MOC")
                     
                     if res.get('rt_cd') == '0':
                         self.queue_ledger.pop_lots(ticker, emergency_qty)
                         
                         msg = f"🚨 <b>[{ticker}] 수동 긴급 수혈 (Emergency MOC) 격발 완료!</b>\n"
                         msg += f"▫️ 포트폴리오 매니저의 승인 하에 최근 로트 <b>{emergency_qty}주</b>를 시장가(MOC)로 강제 청산했습니다.\n"
-                        await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, parse_mode='HTML')
+                        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
                         
                         new_q_data = self.queue_ledger.get_queue(ticker)
                         new_msg, markup = self.view.get_queue_management_menu(ticker, new_q_data)
@@ -210,7 +232,7 @@ class TelegramCallbacks:
                     if ticker not in self.sync_engine.sync_locks:
                         self.sync_engine.sync_locks[ticker] = asyncio.Lock()
                     if not self.sync_engine.sync_locks[ticker].locked():
-                        await self.sync_engine.process_auto_sync(ticker, query.message.chat_id, context, silent_ledger=True)
+                        await self.sync_engine.process_auto_sync(ticker, chat_id, context, silent_ledger=True)
                         
                     final_q = self.queue_ledger.get_queue(ticker) if getattr(self, 'queue_ledger', None) else new_q
                     msg, markup = self.view.get_queue_management_menu(ticker, final_q)
@@ -219,7 +241,7 @@ class TelegramCallbacks:
                 elif action == "EDIT_Q":
                     await query.answer("✏️ 수정 모드 진입", show_alert=False)
                     short_date = target_date[:10]
-                    controller.user_states[update.effective_chat.id] = f"EDITQ_{ticker}_{target_date}"
+                    controller.user_states[chat_id] = f"EDITQ_{ticker}_{target_date}"
                     
                     prompt = f"✏️ <b>[{ticker} 지층 수정 모드]</b>\n"
                     prompt += f"선택하신 <b>[{short_date}]</b> 지층을 재설정합니다.\n\n"
@@ -285,12 +307,6 @@ class TelegramCallbacks:
                     except Exception:
                         pass
                     
-                # MODIFIED: [V29.04] queue_ledger.queues 직접 참조 데드코드 100% 소각 및 런타임 붕괴 방어막 이식
-                # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
-                # 텔레그램 수동 조작 시 queue_ledger.queues 등 존재하지 않는 내부 속성에 직접 접근하여
-                # 삭제(del)하려는 코드를 절대 부활시키지 마십시오. AttributeError 런타임 붕괴를 유발합니다.
-                # 반드시 파이썬 내장 기능인 open과 json.dump를 이용한 다이렉트 파일 I/O만을 사용하며,
-                # 메모리 갱신이 필요한 경우 아래와 같이 _load()를 호출하여 무결성을 확보하십시오.
                 if getattr(self, 'queue_ledger', None) and hasattr(self.queue_ledger, '_load'):
                     try:
                         self.queue_ledger._load()
@@ -305,8 +321,8 @@ class TelegramCallbacks:
         elif action == "REC":
             if sub == "VIEW": 
                 async with self.tx_lock:
-                    _, holdings = self.broker.get_account_balance()
-                await self.sync_engine._display_ledger(data[2], update.effective_chat.id, context, query=query, pre_fetched_holdings=holdings)
+                    _, holdings = await asyncio.to_thread(self.broker.get_account_balance)
+                await self.sync_engine._display_ledger(data[2], chat_id, context, query=query, pre_fetched_holdings=holdings)
             elif sub == "SYNC": 
                 ticker = data[2]
                 
@@ -315,11 +331,11 @@ class TelegramCallbacks:
                     
                 if not self.sync_engine.sync_locks[ticker].locked():
                     await query.edit_message_text(f"🔄 <b>[{ticker}] 잔고 기반 대시보드 업데이트 중...</b>", parse_mode='HTML')
-                    res = await self.sync_engine.process_auto_sync(ticker, update.effective_chat.id, context, silent_ledger=True)
+                    res = await self.sync_engine.process_auto_sync(ticker, chat_id, context, silent_ledger=True)
                     if res == "SUCCESS": 
                         async with self.tx_lock:
-                            _, holdings = self.broker.get_account_balance()
-                        await self.sync_engine._display_ledger(ticker, update.effective_chat.id, context, message_obj=query.message, pre_fetched_holdings=holdings)
+                            _, holdings = await asyncio.to_thread(self.broker.get_account_balance)
+                        await self.sync_engine._display_ledger(ticker, chat_id, context, message_obj=query.message, pre_fetched_holdings=holdings)
 
         elif action == "HIST":
             if sub == "VIEW":
@@ -343,43 +359,17 @@ class TelegramCallbacks:
                     await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
             
             elif sub == "LIST":
-                try:
-                    history_data = self.cfg.get_history()
-                except Exception:
-                    history_data = []
-                    
-                if not history_data:
-                    await query.edit_message_text("📭 <b>명예의 전당 (졸업 기록)이 비어있습니다.</b>", parse_mode='HTML')
-                    return
-                
-                sorted_hist = sorted(history_data, key=lambda x: x.get('end_date', ''), reverse=True)
-                
-                msg = "🏆 <b>[ 명예의 전당 (과거 졸업 기록) ]</b>\n\n"
-                msg += "상세 내역을 조회할 기록을 선택하세요.\n"
-                keyboard = []
-                
-                for h in sorted_hist[:15]: 
-                    t = h.get('ticker', 'UNK')
-                    p = h.get('profit', 0.0)
-                    date_str = h.get('end_date', '')[:10].replace("-", ".")
-                    sign = "+" if p >= 0 else "-"
-                    
-                    btn_text = f"🏅 {date_str} [{t}] {sign}${abs(p):.2f}"
-                    keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"HIST:VIEW:{h['id']}")])
-                    
-                keyboard.append([InlineKeyboardButton("❌ 닫기", callback_data="RESET:CANCEL")])
-                
-                await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+                if hasattr(controller, 'cmd_history'):
+                    await controller.cmd_history(update, context)
 
             elif sub == "IMG":
                 ticker = data[2]
-                
                 target_id = int(data[3]) if len(data) > 3 else None
                 
                 hist_list = [h for h in self.cfg.get_history() if h['ticker'] == ticker]
                 
                 if not hist_list:
-                    await context.bot.send_message(update.effective_chat.id, f"📭 <b>[{ticker}]</b> 발급 가능한 졸업 기록이 존재하지 않습니다.", parse_mode='HTML')
+                    await context.bot.send_message(chat_id, f"📭 <b>[{ticker}]</b> 발급 가능한 졸업 기록이 존재하지 않습니다.", parse_mode='HTML')
                     return
                 
                 target_hist = None
@@ -390,6 +380,7 @@ class TelegramCallbacks:
                     target_hist = sorted(hist_list, key=lambda x: x.get('end_date', ''), reverse=True)[0]
                 
                 try:
+                    await query.edit_message_text(f"🎨 <b>[{ticker}] 프리미엄 졸업 카드를 렌더링 중입니다...</b>", parse_mode='HTML')
                     img_path = self.view.create_profit_image(
                         ticker=target_hist['ticker'],
                         profit=target_hist['profit'],
@@ -401,12 +392,15 @@ class TelegramCallbacks:
                     if os.path.exists(img_path):
                         with open(img_path, 'rb') as f_out:
                             if img_path.lower().endswith('.gif'):
-                                await context.bot.send_animation(chat_id=update.effective_chat.id, animation=f_out)
+                                await context.bot.send_animation(chat_id=chat_id, animation=f_out)
                             else:
-                                await context.bot.send_photo(chat_id=update.effective_chat.id, photo=f_out)
+                                await context.bot.send_photo(chat_id=chat_id, photo=f_out)
+                        await query.delete_message()
+                    else:
+                        await query.edit_message_text("❌ 이미지 생성에 실패했습니다.", parse_mode='HTML')
                 except Exception as e:
                     logging.error(f"📸 👑 졸업 이미지 생성/발송 실패: {e}")
-                    await context.bot.send_message(update.effective_chat.id, "❌ 이미지 렌더링 모듈 장애 발생.", parse_mode='HTML')
+                    await query.edit_message_text("❌ 이미지 생성 중 오류가 발생했습니다.", parse_mode='HTML')
             
         elif action == "EXEC":
             t = sub
@@ -419,7 +413,7 @@ class TelegramCallbacks:
             await query.edit_message_text(f"🚀 {t} 수동 강제 전송 시작 (교차 분리)...")
             
             async with self.tx_lock:
-                cash, holdings = self.broker.get_account_balance()
+                cash, holdings = await asyncio.to_thread(self.broker.get_account_balance)
                 
             if holdings is None:
                 return await query.edit_message_text("❌ API 통신 오류로 주문을 실행할 수 없습니다.")
@@ -483,7 +477,7 @@ class TelegramCallbacks:
                     if upper_qty > 0:
                         if safe_avg <= 0.0:
                             msg = f"🚨 <b>[{t}] 수동 장전 차단:</b> KIS API가 유효한 평단가를 반환하지 않았습니다 (avg=0). 주문을 취소합니다."
-                            await context.bot.send_message(update.effective_chat.id, msg, parse_mode='HTML')
+                            await context.bot.send_message(chat_id, msg, parse_mode='HTML')
                             return
 
                         upper_invested = (logic_qty * safe_avg) - (l1_qty * l1_price)
@@ -522,7 +516,7 @@ class TelegramCallbacks:
                     
                 all_success = True
                 for o in loc_orders:
-                    res = self.broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
+                    res = await asyncio.to_thread(self.broker.send_order, t, o['side'], o['qty'], o['price'], o['type'])
                     is_success = res.get('rt_cd') == '0'
                     if not is_success:
                         all_success = False
@@ -540,7 +534,7 @@ class TelegramCallbacks:
                 else:
                     msg += "\n⚠️ <b>일부 방어선 구축 실패 (잠금 보류)</b>"
                     
-                await context.bot.send_message(update.effective_chat.id, msg, parse_mode='HTML')
+                await context.bot.send_message(chat_id, msg, parse_mode='HTML')
                 return
             
             ma_5day = await asyncio.to_thread(self.broker.get_5day_ma, t)
@@ -560,7 +554,7 @@ class TelegramCallbacks:
             all_success = True
             
             for o in plan.get('core_orders', []):
-                res = self.broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
+                res = await asyncio.to_thread(self.broker.send_order, t, o['side'], o['qty'], o['price'], o['type'])
                 is_success = res.get('rt_cd') == '0'
                 if not is_success:
                     all_success = False
@@ -571,7 +565,7 @@ class TelegramCallbacks:
                 await asyncio.sleep(0.2) 
                 
             for o in plan.get('bonus_orders', []):
-                res = self.broker.send_order(t, o['side'], o['qty'], o['price'], o['type'])
+                res = await asyncio.to_thread(self.broker.send_order, t, o['side'], o['qty'], o['price'], o['type'])
                 is_success = res.get('rt_cd') == '0'
                 err_msg = res.get('msg1', '잔금패스')
                 status_icon = '✅' if is_success else f'❌({err_msg})'
@@ -584,7 +578,7 @@ class TelegramCallbacks:
             else:
                 msg += "\n⚠️ <b>일부 필수 주문 실패 (매매 잠금 보류)</b>"
 
-            await context.bot.send_message(update.effective_chat.id, msg, parse_mode='HTML')
+            await context.bot.send_message(chat_id, msg, parse_mode='HTML')
 
         elif action == "SET_VER":
             new_ver = sub
@@ -596,7 +590,7 @@ class TelegramCallbacks:
                 return
 
             async with self.tx_lock:
-                _, holdings = self.broker.get_account_balance()
+                _, holdings = await asyncio.to_thread(self.broker.get_account_balance)
                 
             if holdings is None:
                 await query.answer("🚨 API 통신 지연으로 잔고를 확인할 수 없어 전환을 차단합니다. 잠시 후 다시 시도해 주세요.", show_alert=True)
@@ -654,7 +648,7 @@ class TelegramCallbacks:
                 return
 
             async with self.tx_lock:
-                _, holdings = self.broker.get_account_balance()
+                _, holdings = await asyncio.to_thread(self.broker.get_account_balance)
                 
             if holdings is None:
                 await query.answer("🚨 API 통신 지연으로 잔고를 확인할 수 없어 전환을 차단합니다. 잠시 후 다시 시도해 주세요.", show_alert=True)
@@ -708,61 +702,59 @@ class TelegramCallbacks:
                     
                 await query.edit_message_text(f"✅ <b>[{ticker}]</b> 퀀트 엔진이 <b>V14 무매4</b> 모드로 전환되었습니다.\n▫️ <b>집행 방식:</b> {mode_txt}\n▫️ /sync 명령어에서 변경된 지시서를 확인하세요.", parse_mode='HTML')
 
+        # 🚨 MODIFIED: [V32.00] TARGET_SET 및 GAP_SET 라우터 전면 소각 (하드코딩화)
         elif action == "AVWAP":
-            if sub in ["MENU", "EARLY"]:
-                ticker = data[2] if sub == "MENU" else data[3]
-                
-                if sub == "EARLY":
-                    is_on = (data[2] == "ON")
-                    self.cfg.set_avwap_early_exit_mode(ticker, is_on)
-                
-                is_hybrid_on = self.cfg.get_avwap_hybrid_mode(ticker)
-                
+            if sub == "MENU":
+                ticker = data[2]
+                is_hybrid_on = getattr(self.cfg, 'get_avwap_hybrid_mode', lambda x: False)(ticker)
                 if not is_hybrid_on:
-                    await query.answer(f"⚠️ [{ticker}] AVWAP 하이브리드 모드가 꺼져있습니다. 먼저 바로 위 버튼을 눌러 활성화해주세요.", show_alert=True)
+                    await query.answer(f"⚠️ [{ticker}] AVWAP 하이브리드 모드가 꺼져있습니다. 먼저 활성화해주세요.", show_alert=True)
                     return
                     
-                early_mode = self.cfg.get_avwap_early_exit_mode(ticker)
-                early_target = self.cfg.get_avwap_early_target(ticker)
+                msg, markup = self.view.get_avwap_console_menu(ticker)
+                await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
                 
-                msg = f"🔫 <b>[ {ticker} AVWAP 암살자 제어 콘솔 ]</b>\n\n"
-                
-                if early_mode:
-                    msg += "🏃‍♂️ <b>현재 모드: [조기 퇴근 (사용자 맞춤형)]</b>\n"
-                    msg += f"▫️ 장중 시간에 구애받지 않고 <b>+{early_target}%</b> 수익 도달 시 즉각 전량 익절하고 퇴근합니다.\n"
-                    msg += "▫️ 장막판 변동성 리스크를 회피하고 일일 수익을 확정 짓는 데 유리합니다.\n"
-                else:
-                    msg += "🦅 <b>현재 모드: [오리지널 스퀴즈 타겟팅]</b>\n"
-                    msg += "▫️ 수익이 나도 기다렸다가 <b>오후 2시 30분(EST)</b> 이후 발생하는 기관 숏커버링 스퀴즈(+3% 이상)를 노립니다.\n"
-                    msg += "▫️ 휩소 장세에서는 종가에 수익을 반납할 리스크가 있습니다.\n"
-
-                keyboard = [
-                    [
-                        InlineKeyboardButton(f"⚪ 오리지널 모드로 전환" if early_mode else "🎯 오리지널 모드 (현재 적용)", callback_data=f"AVWAP:EARLY:OFF:{ticker}"),
-                        InlineKeyboardButton(f"🎯 조기 퇴근 모드 (현재 적용)" if early_mode else "🏃‍♂️ 조기 퇴근 모드로 전환", callback_data=f"AVWAP:EARLY:ON:{ticker}")
-                    ]
-                ]
-                
-                if early_mode:
-                    keyboard.append([
-                        InlineKeyboardButton(f"⚙️ 목표 수익률 설정 (현재: {early_target}%)", callback_data=f"AVWAP:TARGET_SET:{ticker}")
-                    ])
-                
-                keyboard.append([InlineKeyboardButton("❌ 콘솔 닫기", callback_data="RESET:CANCEL")])
-                
-                await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
-
-            elif sub == "TARGET_SET":
+        elif action == "VREV_GAP":
+            if sub == "TOGGLE":
+                state = data[2]
+                ticker = data[3]
+                is_on = (state == "ON")
+                if hasattr(self.cfg, 'set_vrev_gap_switching_mode'):
+                    self.cfg.set_vrev_gap_switching_mode(ticker, is_on)
+                    status_text = "🟢 가동(ON)" if is_on else "🔴 비활성(OFF)"
+                    await query.answer(f"[{ticker}] V-REV 장막판 갭 스위칭: {status_text}", show_alert=False)
+                    
+                    is_gap_switch = getattr(self.cfg, 'get_vrev_gap_switching_mode', lambda x: False)(ticker)
+                    gap_th = getattr(self.cfg, 'get_vrev_gap_threshold', lambda x: -0.67)(ticker)
+                    msg, markup = self.view.get_vrev_gap_console_menu(ticker, is_gap_switch, gap_th)
+                    await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
+                    
+            elif sub == "THRESH_SET":
                 ticker = data[2]
-                controller.user_states[update.effective_chat.id] = f"AVWAP_TARGET_{ticker}"
-                
-                await query.answer("👇 확인을 누르시고, 화면 맨 아래 채팅창에 목표 수익률(숫자)을 쳐주세요!", show_alert=True)
-                
-                await context.bot.send_message(
-                    update.effective_chat.id, 
-                    f"⚙️ <b>[{ticker}] 조기 퇴근 목표 수익률(%)을 입력하세요.</b>\n▫️ 숫자만 입력 (예: 2.5 또는 3.0)",
-                    parse_mode='HTML'
-                )
+                controller.user_states[chat_id] = f"VREV_GAP_{ticker}"
+                await query.answer("👇 확인을 누르시고, 화면 맨 아래 채팅창에 임계치(숫자)를 쳐주세요!", show_alert=True)
+                msg = f"📉 <b>[{ticker} V-REV 갭 스위칭 임계치 설정]</b>\n\n▫️ 장 마감 30분 전 1분 타임 슬라이싱 중, 기초자산(SOXX 등) VWAP 대비 <b>몇 % 하락 시 전량 스윕 타격</b>할지 입력하세요.\n▫️ 입력 예시: <code>-0.67</code> 또는 <code>-1.5</code>\n▫️ (주의: 반드시 음수 형태로 입력하세요)"
+                await context.bot.send_message(chat_id, msg, parse_mode='HTML')
+
+        elif action == "VREV":
+            if sub == "GAP_ON":
+                ticker = data[2]
+                if hasattr(self.cfg, 'set_vrev_gap_switching_mode'):
+                    self.cfg.set_vrev_gap_switching_mode(ticker, True)
+                if hasattr(controller, 'cmd_settlement'):
+                    await controller.cmd_settlement(update, context)
+            elif sub == "GAP_OFF":
+                ticker = data[2]
+                if hasattr(self.cfg, 'set_vrev_gap_switching_mode'):
+                    self.cfg.set_vrev_gap_switching_mode(ticker, False)
+                if hasattr(controller, 'cmd_settlement'):
+                    await controller.cmd_settlement(update, context)
+            elif sub == "GAP_TARGET_SET":
+                ticker = data[2]
+                controller.user_states[chat_id] = f"VREV_GAP_{ticker}"
+                await query.answer("👇 확인을 누르시고, 화면 맨 아래 채팅창에 임계치(숫자)를 쳐주세요!", show_alert=True)
+                msg = f"📉 <b>[{ticker} 장막판 갭 스위칭 임계치 설정]</b>\n▫️ 장 마감 30분 전 기초자산 VWAP 대비 몇 % 이탈 시 100% 스윕할지 입력하세요.\n▫️ 예: -0.67, -1.0\n▫️ (주의: 반드시 음수 형태로 입력하세요)"
+                await context.bot.send_message(chat_id, msg, parse_mode='HTML')
 
         elif action == "MODE":
             mode_val = sub
@@ -776,7 +768,7 @@ class TelegramCallbacks:
                 if hasattr(self.cfg, 'set_avwap_hybrid_mode'):
                     self.cfg.set_avwap_hybrid_mode(ticker, True)
                 self.cfg.set_upward_sniper_mode(ticker, False) 
-                await query.edit_message_text(f"🔥 <b>[{ticker}] 차세대 AVWAP 하이브리드 암살자 모드가 락온(Lock-on) 되었습니다!</b>\n▫️ 남은 가용 예산 100%를 활용하여 장중 -2% 타점을 정밀 사냥합니다.", parse_mode='HTML')
+                await query.edit_message_text(f"🔥 <b>[{ticker}] 차세대 12차 AVWAP 암살자 모드가 락온(Lock-on) 되었습니다!</b>\n▫️ 남은 가용 예산 100%를 활용하여 장중 딥매수 타점을 정밀 사냥합니다.", parse_mode='HTML')
                 return
             elif mode_val == "AVWAP_OFF":
                 if hasattr(self.cfg, 'set_avwap_hybrid_mode'):
@@ -794,16 +786,16 @@ class TelegramCallbacks:
             
         elif action == "TICKER":
             self.cfg.set_active_tickers([sub] if sub != "ALL" else ["SOXL", "TQQQ"])
-            await query.edit_message_text(f"✅ 운용 종목 변경: {sub}")
+            await query.edit_message_text(f"✅ 운용 종목 변경: {sub}", parse_mode='HTML')
             
         elif action == "SEED":
             ticker = data[2]
-            controller.user_states[update.effective_chat.id] = f"SEED_{sub}_{ticker}"
-            await context.bot.send_message(update.effective_chat.id, f"💵 [{ticker}] 시드머니 금액 입력:")
+            controller.user_states[chat_id] = f"SEED_{sub}_{ticker}"
+            await context.bot.send_message(chat_id, f"💵 [{ticker}] 시드머니 금액 입력:", parse_mode='HTML')
             
         elif action == "INPUT":
             ticker = data[2]
-            controller.user_states[update.effective_chat.id] = f"CONF_{sub}_{ticker}"
+            controller.user_states[chat_id] = f"CONF_{sub}_{ticker}"
             
             if sub == "SPLIT":
                 ko_name = "분할 횟수"
@@ -818,4 +810,6 @@ class TelegramCallbacks:
             else:
                 ko_name = "값"
             
-            await context.bot.send_message(update.effective_chat.id, f"⚙️ [{ticker}] {ko_name} 입력 (숫자만):")
+            desc = "숫자만 입력하세요.\n(예: 액면분할 시 1주가 10주가 되었다면 10 입력, 10주가 1주로 병합되었다면 0.1 입력)" if sub == "STOCK_SPLIT" else "숫자만 입력하세요."
+            await context.bot.send_message(chat_id, f"✏️ <b>[{ticker}] {ko_name}</b>를 설정합니다.\n{desc}", parse_mode='HTML')
+

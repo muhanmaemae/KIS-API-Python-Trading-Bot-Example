@@ -7,14 +7,12 @@
 # MODIFIED: [V28.25 동적 수수료율 텍스트 입력 라우터 수술] 
 # 사용자가 텔레그램 창에 입력한 수수료(%)를 파싱하여 config에 저장하는 CONF_FEE 상태 처리 로직 완벽 이식.
 # NEW: [V28.31] 텔레그램 하단 고정 키보드 텍스트 라우팅 복구 (코파일럿 방식 채택)
-# 🚨 [V29.00 NEW] 암살자 조기 퇴근 목표 수익률(AVWAP_TARGET) 텍스트 입력/저장 라우터 개통
 # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo('America/New_York') 이식으로 타임존 무결성 달성
+# 🚨 MODIFIED: [V32.00] 12차 AVWAP 백테스트 팩트 반영. 불필요해진 동적 파라미터(AVWAP_TARGET 등) 텍스트 입력 라우터 전면 소각.
 # ==========================================================
 # NEW: [리팩토링 2단계] 유저 텍스트 입력 및 상태 기계(State Machine) 독립 클래스 분리
 import logging
 import datetime
-# MODIFIED: [V30.09 핫픽스] LMT 오차 방어를 위해 pytz 적출 및 ZoneInfo 도입
-# import pytz
 from zoneinfo import ZoneInfo
 import os
 import json
@@ -130,21 +128,7 @@ class TelegramStates:
                     
                 return
 
-            # 🚨 [V29.00 NEW] 사용자 조기 퇴근 목표 수익률 텍스트 입력 라우터
-            if state.startswith("AVWAP_TARGET_"):
-                val = float(text)
-                if val <= 0:
-                    del controller.user_states[chat_id]
-                    return await update.message.reply_text("❌ 오류: 목표 수익률은 0보다 커야 합니다. (입력 취소됨)")
-                
-                ticker = state.split("_")[2]
-                self.cfg.set_avwap_early_target(ticker, val)
-                
-                msg = f"🏃‍♂️ <b>[{ticker}] 조기 퇴근 목표 수익률 {val}% 락온 완료!</b>\n"
-                msg += f"▫️ 다음 스나이핑 적중 시부터 이 목표 수익에 도달하면 장중 언제라도 즉각 전량 익절합니다."
-                
-                del controller.user_states[chat_id]
-                return await update.message.reply_text(msg, parse_mode='HTML')
+            # MODIFIED: [V32.00] AVWAP_TARGET 텍스트 입력 라우터 전면 소각 완료.
 
             val = float(text)
             parts = state.split("_")
@@ -199,7 +183,6 @@ class TelegramStates:
                 ticker = parts[2]
                 self.cfg.apply_stock_split(ticker, val)
                 
-                # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식
                 est = ZoneInfo('America/New_York')
                 today_str = datetime.datetime.now(est).strftime('%Y-%m-%d')
                 self.cfg.set_last_split_date(ticker, today_str)
@@ -213,3 +196,4 @@ class TelegramStates:
         finally:
             if chat_id in controller.user_states:
                 del controller.user_states[chat_id]
+

@@ -1,38 +1,10 @@
 # ==========================================================
 # [telegram_bot.py] - 🌟 100% 통합 무결점 완성본 (Full Version) 🌟
-# MODIFIED: [V28.16 지시서(UI) 스냅샷 디커플링 그랜드 수술]
-# 1) V-REV 지시서 렌더링 시 실시간 큐(Queue) 장부 조회를 전면 소각하고, 
-#    17:05 스냅샷(cached_snap)에 박제된 매도 주문(SELL)을 직접 파싱하여 
-#    출력하도록 완벽한 디커플링(Decoupling) 적용. (장중 타점 변동 원천 차단)
-# 2) V14 (오리지널 LOC) 모드 스냅샷 로드 분기 신설.
-# 3) V14-VWAP 모드 스냅샷 수량 Key('initial_qty') 불일치 팩트 교정.
-# 4) [2차 보완] 하드코딩된 '[1층 단독]' 문자열 의존성 100% 소각 및 
-#    유연한 동적 번호 부여(Pop1, Pop2...) 파싱 아키텍처 이식.
-# 5) [3차 보완] V-REV 잭팟 타점 실시간 변이 방어를 위해 actual_avg 대신
-#    스냅샷에 박제된 avg_price 앵커 최우선 적용.
-# MODIFIED: [V28.22 스냅샷 렌더링 디커플링 수술] 졸업 카드 목록에서 
-# 과거 내역을 조회할 때, 해당 내역의 고유 식별자(ID)를 뷰 엔진으로 
-# 100% 전달하도록 라우팅 배선(history_id=hid) 교정 완료.
-# MODIFIED: [V28.28 이벤트 루프 직접 차단(Blocking) 원천 방어]
-# /sync 핸들러 내부에서 get_account_balance() 동기 함수가 이벤트 루프를 
-# 영구 점유하던 치명적 버그를 asyncio.to_thread() 래핑으로 완벽 교정.
-# NEW: [V28.31] 하단 고정 키보드 한글 신호 무응답 맹점 완벽 수술 (라우팅 복구)
-# 🚨 [V28.50 NEW] AVWAP 암살자 전용 '조기퇴근/타겟설정' 독립 UI 라우터 개통
-# 🚨 [V29.04 MODIFIED] UI 렌더링 파편화 수술: /history 명령어(cmd_history)의 구형 출력을 최신형 콜백 UI(HIST:LIST)와 100% 동일하게 통일화 완료.
-# 🚨 [V29.05 핵심 수술] 평단가 하방 오염 디커플링: V-REV 지시서(가이던스) 연산 시 한투 평단가(actual_avg) 개입을 영구 차단하고, 큐(Queue) 지층 기반 순수 역산 로직 100% 이식 완료.
-# 🚨 [V29.08 팩트 교정] 장마감(CLOSE) 현재가 출력 수술: 애프터마켓 종료 후에는 실시간 가격($100.25) 대신 '정규장 종가($98.09)'를 현재가(curr)로 강제 고정하여 HTS와 100% 동기화 완료.
-# 🚨 [V29.10 팩트 교정] V-REV 0주 새출발 렌더링 시 스냅샷 수량(logic_qty) 의존성 전면 소각 및 실잔고(v_rev_q_qty) 기반 100% 디커플링 완성 (타점 오염 및 줍줍 렌더링 버그 영구 차단)
-# 🚨 [V30.01 팩트 수술] AVWAP 암살자 실시간 레이더(Radar) 시각화 엔진의 혈관(Sync Engine) 개통
-# 🚨 [V30.02 팩트 교정] 버전 기록(V28.40/V29.10)의 0주 락온 디커플링 환각 사태 완벽 수술
-# 🚨 [V30.04 팩트 교정] AVWAP 암살자 타임라인 시간 표기 100% 소각 및 직관적 상태 위주 렌더링
-# 🚨 [V30.05 팩트 수술] AVWAP 암살자 모니터링 타임라인 1시간 연장 (15:00 EST 마감) 렌더링 동기화
-# 🚨 [V30.06 NEW] 장중 업데이트 레드존(Update Red-Zone) 원천 차단:
-# VWAP 타임 슬라이싱 및 장마감 정산의 무결성을 위해 EST 14:55 ~ 16:10 사이의
-# /update 명령어를 시스템적으로 차단하고 팩트 메시지를 타전하도록 수술 완료.
-# MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식을 통한 타임존 오차 차단. cmd_record 비동기 블로킹 방어막 탑재 완료.
+# 🚨 MODIFIED: [V31.00] AVWAP 암살자 제어 콘솔 모드 토글링 전면 소각 (다중 출장 100% 락온)
+# 🚨 MODIFIED: [V31.00] /sync 지시서 실시간 레이더 시각화를 위한 prev_vwap, rolling_tp 추출 파이프라인 개통
+# 🚨 MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식을 통한 타임존 오차 차단.
 # 🚨 MODIFIED: [V30.18 그랜드 핫픽스] 스냅샷 렌더링 디커플링 무결성 확보 및 실시간 잔고 오염 원천 차단
-# 1) V-REV 지시서 렌더링 시 실시간 잔고(v_rev_q_qty) 의존성을 소각하고 스냅샷 팩트 수량(logic_qty)으로 강제 락온.
-# 2) 잭팟 타임패러독스 차단을 위해 실시간 큐를 스냅샷 수량만큼만 핀셋 역산하여 진성 평단가(snap_avg) 도출.
+# 🚨 MODIFIED: [V32.00] 12차 팩트 반영. cmd_avwap 내부의 파라미터 조회 찌꺼기 완벽 소각.
 # ==========================================================
 import logging
 import datetime
@@ -184,6 +156,7 @@ class TelegramController:
             
         await self.states_handler.handle_message(update, context, self)
 
+    # MODIFIED: [V32.00] 12차 팩트 하드코딩 룰 적용 (early_target 등 파라미터 소각)
     async def cmd_avwap(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_admin(update):
             return
@@ -197,31 +170,9 @@ class TelegramController:
             msg += f"▫️ <code>/settlement</code> 메뉴에서 먼저 활성화해주세요."
             return await update.message.reply_text(msg, parse_mode='HTML')
 
-        early_mode = self.cfg.get_avwap_early_exit_mode(t)
-        early_target = self.cfg.get_avwap_early_target(t)
-        
-        msg = f"🔫 <b>[ {t} AVWAP 암살자 제어 콘솔 ]</b>\n\n"
-        
-        if early_mode:
-            msg += "🏃‍♂️ <b>현재 모드: [조기 퇴근 (사용자 맞춤형)]</b>\n"
-            msg += f"▫️ 장중 시간에 구애받지 않고 <b>+{early_target}%</b> 수익 도달 시 즉각 전량 익절하고 퇴근합니다.\n"
-            msg += "▫️ 장막판 변동성 리스크를 회피하고 일일 수익을 확정 짓는 데 유리합니다.\n"
-        else:
-            msg += "🦅 <b>현재 모드: [오리지널 스퀴즈 타겟팅]</b>\n"
-            msg += "▫️ 수익이 나도 기다렸다가 <b>오후 2시 30분(EST)</b> 이후 발생하는 기관 숏커버링 스퀴즈(+3% 이상)를 노립니다.\n"
-            msg += "▫️ 휩소 장세에서는 종가에 수익을 반납할 리스크가 있습니다.\n"
-
-        keyboard = [
-            [
-                InlineKeyboardButton(f"⚪ 오리지널 모드로 전환" if early_mode else "🎯 오리지널 모드 (현재 적용)", callback_data=f"AVWAP:EARLY:OFF:{t}"),
-                InlineKeyboardButton(f"🎯 조기 퇴근 모드 (현재 적용)" if early_mode else "🏃‍♂️ 조기 퇴근 모드로 전환", callback_data=f"AVWAP:EARLY:ON:{t}")
-            ],
-            [
-                InlineKeyboardButton(f"⚙️ 목표 수익률 설정 (현재: {early_target}%)", callback_data=f"AVWAP:TARGET_SET:{t}")
-            ]
-        ]
-        
-        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+        # 🚨 [V32.00] 불필요한 동적 파라미터 호출 소각
+        msg, markup = self.view.get_avwap_console_menu(t)
+        await update.message.reply_text(msg, reply_markup=markup, parse_mode='HTML')
 
     async def cmd_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_admin(update):
@@ -482,10 +433,13 @@ class TelegramController:
             avwap_qty = 0
             avwap_avg = 0.0
             avwap_status_txt = ""
+            avwap_strikes = 0
             
             avwap_base_ticker = 'N/A'
             avwap_base_price = 0.0
             avwap_base_vwap = 0.0
+            avwap_prev_vwap = 0.0
+            avwap_rolling_tp = 0.0
             avwap_gap_pct = 0.0
 
             if ver == "V_REV":
@@ -503,8 +457,6 @@ class TelegramController:
                 
                 tag = "VWAP" if is_manual_vwap else "LOC"
                 
-                # 🚨 MODIFIED: [V30.18 스냅샷 렌더링 디커플링 핫픽스]
-                # 장중 매매로 실시간 큐가 변하더라도 오직 박제된 스냅샷 팩트 수량(logic_qty > 0)에 종속시켜 렌더링 강제 락온
                 if cached_snap and "orders" in cached_snap and logic_qty > 0:
                     sell_idx = 1
                     for o in cached_snap["orders"]:
@@ -513,8 +465,6 @@ class TelegramController:
                             sell_idx += 1
                             
                     if not is_manual_vwap:
-                        # 🚨 MODIFIED: [V30.18 방어막] 스냅샷에 avg_price 누락 시 실시간 q_list를 참조하여 잭팟 타점이 요동치던 맹점 원천 차단.
-                        # 스냅샷에 박제된 orders의 수량과 가격만을 100% 역산하여 진성 평단가(snap_avg)를 복원.
                         if 'avg_price' in cached_snap:
                             snap_avg = float(cached_snap['avg_price'])
                         else:
@@ -552,7 +502,6 @@ class TelegramController:
                         v_rev_guidance += f" 🔵 매도2(Pop2) ${target_upper:.2f} <b>{upper_qty}주</b> ({tag})\n"
                         
                     if not is_manual_vwap:
-                        # 🚨 NEW: [V30.18 핫픽스] 폴백(Fallback) 시에도 logic_qty 락온 연산 적용
                         temp_qty = 0
                         temp_inv = 0.0
                         for item in q_list:
@@ -575,7 +524,6 @@ class TelegramController:
                     v_rev_guidance += " 🔵 매도: 대기 물량 없음 (관망)\n"
                 
                 if safe_prev_close > 0:
-                    # 🚨 MODIFIED: [V30.18 핫픽스] Buy 타점 연산 시 실시간 잔고(v_rev_q_qty == 0) 대신 스냅샷 팩트(is_zero_start_fact) 100% 락온
                     b1_price = round(safe_prev_close / 0.935 if is_zero_start_fact else safe_prev_close * 0.995, 2)
                     b2_price = round(safe_prev_close * 0.999 if is_zero_start_fact else safe_prev_close * 0.9725, 2)
                     
@@ -610,15 +558,25 @@ class TelegramController:
                     avwap_qty = tracking_cache.get(f"AVWAP_QTY_{t}", 0)
                     avwap_avg = tracking_cache.get(f"AVWAP_AVG_{t}", 0.0)
                     avwap_budget = cash
+                    avwap_strikes = tracking_cache.get(f"AVWAP_STRIKES_{t}", 0)
                     
                     if tracking_cache.get(f"AVWAP_SHUTDOWN_{t}"):
-                        avwap_status_txt = "🛑 영구동결 (SHUTDOWN)"
+                        avwap_status_txt = "🛑 당일 영구동결 (SHUTDOWN)"
                     elif tracking_cache.get(f"AVWAP_BOUGHT_{t}"):
                         avwap_status_txt = "🎯 딥매수 완료 (익절/손절 감시중)"
+                    elif tracking_cache.get(f"AVWAP_COOLDOWN_{t}"):
+                        avwap_status_txt = "⏳ 자연 쿨다운 (VWAP 갭 회복 대기중)"
                     else:
-                        avwap_status_txt = "👀 장초반 필터 스캔 및 타점 대기"
+                        avwap_status_txt = "👀 상승장 필터 스캔 및 갭 타점 대기"
 
                     avwap_base_ticker = 'SOXX' if t == 'SOXL' else ('QQQ' if t == 'TQQQ' else t)
+                    
+                    avwap_ctx = tracking_cache.get(f"AVWAP_CTX_{t}")
+                    if not avwap_ctx:
+                        try:
+                            avwap_ctx = await asyncio.wait_for(asyncio.to_thread(self.strategy.v_avwap_plugin.fetch_macro_context, avwap_base_ticker), timeout=4.0)
+                            if avwap_ctx: tracking_cache[f"AVWAP_CTX_{t}"] = avwap_ctx
+                        except Exception: pass
 
                     if status_code in ["PRE", "REG"] and not tracking_cache.get(f"AVWAP_SHUTDOWN_{t}"):
                         try:
@@ -626,17 +584,19 @@ class TelegramController:
                             base_curr_p = float(await asyncio.wait_for(asyncio.to_thread(self.broker.get_current_price, avwap_base_ticker), timeout=3.0) or 0.0)
                             
                             if hasattr(self.strategy, 'v_avwap_plugin'):
+                                avwap_state_dict = {"strikes": tracking_cache.get(f"AVWAP_STRIKES_{t}", 0), "cooldown_active": tracking_cache.get(f"AVWAP_COOLDOWN_{t}", False)}
+                                
                                 decision = self.strategy.v_avwap_plugin.get_decision(
-                                    base_ticker=avwap_base_ticker,
-                                    exec_ticker=t,
-                                    base_curr_p=base_curr_p,
-                                    exec_curr_p=curr,
-                                    df_1min_base=df_1min_base,
-                                    avwap_qty=avwap_qty,
-                                    now_est=now_est
+                                    base_ticker=avwap_base_ticker, exec_ticker=t,
+                                    base_curr_p=base_curr_p, exec_curr_p=curr,
+                                    df_1min_base=df_1min_base, avwap_qty=avwap_qty,
+                                    now_est=now_est, avwap_state=avwap_state_dict,
+                                    context_data=avwap_ctx
                                 )
                                 avwap_base_price = decision.get('base_curr_p', base_curr_p)
                                 avwap_base_vwap = decision.get('vwap', 0.0)
+                                avwap_prev_vwap = decision.get('prev_vwap', 0.0)
+                                avwap_rolling_tp = decision.get('rolling_tp', 0.0)
                                 avwap_gap_pct = decision.get('gap_pct', 0.0)
                                 
                                 if "대기" in avwap_status_txt:
@@ -651,7 +611,7 @@ class TelegramController:
                         time_1500 = datetime.time(15, 0)
                         
                         if curr_time < time_1000:
-                            avwap_status_txt = "⏳ 금일 감시 대기"
+                            avwap_status_txt = "⏳ 10시 장초반 노이즈 대기"
                         elif curr_time >= time_1500:
                             avwap_status_txt = "⛔ 금일 감시 종료"
 
@@ -684,10 +644,16 @@ class TelegramController:
                 'avwap_qty': avwap_qty,
                 'avwap_avg': avwap_avg,
                 'avwap_status': avwap_status_txt,
+                'avwap_strikes': avwap_strikes,
                 'avwap_base_ticker': avwap_base_ticker if is_avwap_active else 'N/A',
                 'avwap_base_price': avwap_base_price if is_avwap_active else 0.0,
                 'avwap_base_vwap': avwap_base_vwap if is_avwap_active else 0.0,
+                'avwap_prev_vwap': avwap_prev_vwap if is_avwap_active else 0.0,
+                'avwap_rolling_tp': avwap_rolling_tp if is_avwap_active else 0.0,
                 'avwap_gap_pct': avwap_gap_pct if is_avwap_active else 0.0,
+                'avwap_gap_thresh': getattr(self.cfg, 'get_avwap_gap_threshold', lambda x: -0.67)(t) if is_avwap_active else -0.67,
+                'vrev_gap_switch': getattr(self.cfg, 'get_vrev_gap_switching_mode', lambda x: False)(t),
+                'vrev_gap_thresh': getattr(self.cfg, 'get_vrev_gap_threshold', lambda x: -0.67)(t),
                 'is_manual_vwap': is_manual_vwap,
                 'is_zero_start': is_zero_start_fact
             })
@@ -869,3 +835,4 @@ class TelegramController:
         history_data = self.cfg.get_full_version_history()
         msg, markup = self.view.get_version_message(history_data, page_index=None)
         await update.message.reply_text(msg, reply_markup=markup, parse_mode='HTML')
+

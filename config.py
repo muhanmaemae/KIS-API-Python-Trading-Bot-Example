@@ -1,27 +1,23 @@
 # ==========================================================
-# [config.py] - 🌟 100% 통합 완성본 🌟 (Part 1)
+# [config.py] - 🌟 100% 통합 완성본 🌟
 # ⚠️ V_REV 도입에 따른 P매매 잔재 완벽 소각 버전
 # 💡 [V24.10 수술] 동적 에스크로 락다운 깃발(Flag) 제어 로직 추가
 # 💡 [V25.00 수술] AVWAP 하이브리드 전술 상태 저장(캐싱) 파일 경로 및 함수 이식
 # 🚨 [V25.19 핫픽스] 빈 장부 스캔 시 IndexError 런타임 붕괴 완벽 방어
 # 🚨 [V25.19 핫픽스] 에스크로(Escrow) 3대 관리 함수(set/add/clear) 팩트 기반 완전 구현
 # 🚀 [V26.00 승격] 수동 VWAP 시그널 모드(Manual Mode) 독립 플래그 및 캐싱 엔진 신설 탑재
-# 🚀 [V26.07 확정 순수익 렌더링 패치] 명예의 전당 및 졸업 카드 발급 시 한투 OpenAPI 왕복 수수료(0.5%) 완벽 차감 이식
-# 🚨 [V27.10 그랜드 수술] 에스크로 캐시 영구 박제(Ghost Escrow 방어), 액면분할 수학적 반올림(Banker's Rounding) 오류 교정 및 fsync 무결성 확보
+# 🚀 [V26.07 확정 순수익 렌더링 패치] 명예 전당 및 졸업 카드 발급 시 왕복 수수료(0.5%) 완벽 차감
+# 🚨 [V27.10 그랜드 수술] 에스크로 캐시 영구 박제, 액면분할 수학적 반올림(Banker's Rounding) 오류 교정
 # 🚨 [V27.11 핫픽스] I/O FD 누수 방어, TOCTOU 경쟁 상태 원천 차단 래퍼 추가
 # MODIFIED: [V28.25 그랜드 수술] 수수료 하드코딩 전면 소각 및 동적 수수료(Fee) 설정 엔진 탑재
-# MODIFIED: [V28.26 타임존 락온 그랜드 수술] KST 기준 날짜 연산을 전면 폐기하고,
-# INIT 레코드 기록 및 락(Lock) 해제 등 모든 기준 시간을 EST(미국 동부)로 100% 형변환하여 
-# 타임 패러독스로 인한 스냅샷 매핑 실패 버그를 영구 소각 완료. (EC-3 방어)
-# 🚨 [V28.50 NEW] 사용자 맞춤형 AVWAP 암살자 조기 퇴근 설정(Early Exit/Target) 저장소 완비
-# MODIFIED: [V29.16 핫픽스] 마스터 스위치 및 스나이퍼 락온(Buy/Sell) 영속성 Getter/Setter 팩트 이식 완료
-# MODIFIED: [V30.09 핫픽스] pytz 영구 적출 및 ZoneInfo 도입으로 LMT 버그 차단 및 타임존 무결성 100% 확보
+# MODIFIED: [V28.26 타임존 락온] KST 기준 날짜 연산을 전면 폐기하고, EST(미국 동부)로 100% 형변환
+# MODIFIED: [V29.16 핫픽스] 마스터 스위치 및 스나이퍼 락온(Buy/Sell) 영속성 Getter/Setter 이식
+# MODIFIED: [V30.09 핫픽스] pytz 영구 적출 및 ZoneInfo 도입으로 LMT 버그 차단
+# 🚨 MODIFIED: [V32.00 그랜드 수술] 12차 백테스트 팩트 락온. 불필요해진 AVWAP 조기퇴근/동적갭 파라미터 저장소 완전 소각.
 # ==========================================================
 import json
 import os
 import datetime
-# MODIFIED: [V30.09 핫픽스] LMT 오차 방어를 위해 pytz 적출 및 ZoneInfo 도입
-# import pytz
 from zoneinfo import ZoneInfo
 import math
 import time
@@ -63,12 +59,13 @@ class ConfigManager:
             "AVWAP_HYBRID_CFG": "data/avwap_hybrid.json",
             "MANUAL_VWAP_CFG": "data/manual_vwap_config.json",
             "FEE_CFG": "data/fee_config.json", 
-            "AVWAP_EARLY_EXIT_CFG": "data/avwap_early_exit.json",    
-            "AVWAP_EARLY_TARGET_CFG": "data/avwap_early_target.json",
-            # 🚨 [V29.16 수술 부위] 누락된 스나이퍼 락 및 스위치 파일 경로 이식
             "MASTER_SWITCH": "data/master_switch.json",
             "SNIPER_BUY_LOCKED": "data/sniper_buy_locked.json",
-            "SNIPER_SELL_LOCKED": "data/sniper_sell_locked.json"
+            "SNIPER_SELL_LOCKED": "data/sniper_sell_locked.json",
+            "AVWAP_MULTI_STRIKE_CFG": "data/avwap_multi_strike.json", # 유지: 12차 다중 출장 플래그
+            "VREV_GAP_SWITCH_CFG": "data/vrev_gap_switch.json",       # 유지: V-REV용 갭 스위치
+            "VREV_GAP_THRESH_CFG": "data/vrev_gap_thresh.json"        # 유지: V-REV용 갭 스위치 임계치
+            # MODIFIED: [V32.00] 불필요한 AVWAP 파라미터 파일(EARLY_EXIT, EARLY_TARGET, GAP_THRESH) 소각
         }
         
         self.DEFAULT_SEED = {"SOXL": 6720.0, "TQQQ": 6720.0}
@@ -251,7 +248,6 @@ class ConfigManager:
         self._atomic_update_locks(_update)
 
     def set_lock(self, ticker, market_type):
-        # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식
         est = ZoneInfo('America/New_York')
         today = datetime.datetime.now(est).strftime('%Y-%m-%d')
         def _update(locks):
@@ -267,7 +263,6 @@ class ConfigManager:
         self._atomic_update_locks(_update)
         
     def reset_lock_for_ticker(self, ticker):
-        # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식
         est = ZoneInfo('America/New_York')
         today = datetime.datetime.now(est).strftime('%Y-%m-%d')
         def _update(locks):
@@ -277,7 +272,6 @@ class ConfigManager:
         self._atomic_update_locks(_update)
 
     def check_lock(self, ticker, market_type):
-        # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식
         est = ZoneInfo('America/New_York')
         today = datetime.datetime.now(est).strftime('%Y-%m-%d')
         locks = self._load_json(self.FILES["LOCKS"], {})
@@ -368,7 +362,6 @@ class ConfigManager:
             print(f"⚠️ [보안 차단] {ticker}의 장부 기록이 이미 존재하여 파괴적 INIT 덮어쓰기를 차단했습니다.")
             return
             
-        # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식
         est = ZoneInfo('America/New_York')
         today_str = datetime.datetime.now(est).strftime('%Y-%m-%d')
         new_id = 1 if not ledger else max(r.get('id', 0) for r in ledger) + 1
@@ -487,7 +480,6 @@ class ConfigManager:
 
     def set_reverse_state(self, ticker, is_active, day_count, exit_target=0.0, last_update_date=None):
         if last_update_date is None:
-            # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식
             est = ZoneInfo('America/New_York')
             last_update_date = datetime.datetime.now(est).strftime('%Y-%m-%d')
             
@@ -501,7 +493,6 @@ class ConfigManager:
     def increment_reverse_day(self, ticker):
         state = self.get_reverse_state(ticker)
         if state.get("is_active"):
-            # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo 이식
             est = ZoneInfo('America/New_York')
             now_est = datetime.datetime.now(est)
             today_est_str = now_est.strftime('%Y-%m-%d')
@@ -720,24 +711,31 @@ class ConfigManager:
         self._save_json(self.FILES["MANUAL_VWAP_CFG"], d)
 
     # ==========================================================
-    # 🚨 [V28.50 NEW] AVWAP 암살자 조기 퇴근 듀얼 코어 Getter/Setter
+    # 🚨 [V31.00] 다중 회전 출장 모드 및 V-REV 장막판 갭 스위칭 유지
     # ==========================================================
-    def get_avwap_early_exit_mode(self, ticker): 
-        return self._load_json(self.FILES["AVWAP_EARLY_EXIT_CFG"], {}).get(ticker, False)
+    def get_avwap_multi_strike_mode(self, ticker): 
+        return self._load_json(self.FILES.get("AVWAP_MULTI_STRIKE_CFG", "data/avwap_multi_strike.json"), {}).get(ticker, False)
         
-    def set_avwap_early_exit_mode(self, ticker, v):
-        d = self._load_json(self.FILES["AVWAP_EARLY_EXIT_CFG"], {})
+    def set_avwap_multi_strike_mode(self, ticker, v):
+        d = self._load_json(self.FILES.get("AVWAP_MULTI_STRIKE_CFG", "data/avwap_multi_strike.json"), {})
         d[ticker] = bool(v)
-        self._save_json(self.FILES["AVWAP_EARLY_EXIT_CFG"], d)
+        self._save_json(self.FILES.get("AVWAP_MULTI_STRIKE_CFG", "data/avwap_multi_strike.json"), d)
 
-    def get_avwap_early_target(self, ticker): 
-        # 기본값 2.5(%) 로 설정
-        return float(self._load_json(self.FILES["AVWAP_EARLY_TARGET_CFG"], {}).get(ticker, 2.5))
+    def get_vrev_gap_switching_mode(self, ticker): 
+        return self._load_json(self.FILES.get("VREV_GAP_SWITCH_CFG", "data/vrev_gap_switch.json"), {}).get(ticker, False)
         
-    def set_avwap_early_target(self, ticker, v):
-        d = self._load_json(self.FILES["AVWAP_EARLY_TARGET_CFG"], {})
+    def set_vrev_gap_switching_mode(self, ticker, v):
+        d = self._load_json(self.FILES.get("VREV_GAP_SWITCH_CFG", "data/vrev_gap_switch.json"), {})
+        d[ticker] = bool(v)
+        self._save_json(self.FILES.get("VREV_GAP_SWITCH_CFG", "data/vrev_gap_switch.json"), d)
+
+    def get_vrev_gap_threshold(self, ticker): 
+        return float(self._load_json(self.FILES.get("VREV_GAP_THRESH_CFG", "data/vrev_gap_thresh.json"), {}).get(ticker, -0.67))
+        
+    def set_vrev_gap_threshold(self, ticker, v):
+        d = self._load_json(self.FILES.get("VREV_GAP_THRESH_CFG", "data/vrev_gap_thresh.json"), {})
         d[ticker] = float(v)
-        self._save_json(self.FILES["AVWAP_EARLY_TARGET_CFG"], d)
+        self._save_json(self.FILES.get("VREV_GAP_THRESH_CFG", "data/vrev_gap_thresh.json"), d)
 
     # ==========================================================
     # 🚨 [V29.16 수술] 스나이퍼 락온(Lock-on) 및 마스터 스위치 영속성 모듈 이식
@@ -775,3 +773,4 @@ class ConfigManager:
         v = self._load_file(self.FILES["CHAT_ID"])
         return int(v) if v else None
     def set_chat_id(self, v): self._save_file(self.FILES["CHAT_ID"], v)
+
