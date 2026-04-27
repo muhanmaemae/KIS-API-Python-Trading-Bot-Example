@@ -467,7 +467,7 @@ class TelegramView:
                 raw_guidance = raw_guidance.rstrip('\n')
                 body_msg += raw_guidance + "\n"
 
-                # MODIFIED: [V32.00] 12차 팩트 하드코딩 룰 지시서 렌더링
+                # MODIFIED: [V32.00] 12차 팩트 하드코딩 룰 지시서 렌더링 및 안건3 모바일 가시성 최적화
                 if t_info.get('avwap_active', False):
                     avwap_qty = t_info.get('avwap_qty', 0)
                     avwap_avg = t_info.get('avwap_avg', 0.0)
@@ -487,18 +487,20 @@ class TelegramView:
                     body_msg += f"▫️ 기초자산(Base): <b>{base_tkr}</b>\n"
                     
                     if prev_vwap > 0:
-                        body_msg += f"▫️ <b>[전일]</b> 정규장 VWAP: ${prev_vwap:,.2f}\n"
-                        trend_str = "🟢상승장(진입허용)" if base_vwap >= prev_vwap else "🔴하락장(진입차단)"
-                        body_msg += f"▫️ <b>[당일]</b> 실시간 VWAP: ${base_vwap:,.2f} ({trend_str})\n"
+                        body_msg += f"▫️ 전일 VWAP: ${prev_vwap:,.2f}\n"
+                        trend_str = "🟢 상승장 (진입허용)" if base_vwap >= prev_vwap else "🔴 하락장 (진입차단)"
+                        body_msg += f"▫️ 당일 VWAP: ${base_vwap:,.2f}\n"
+                        body_msg += f" ↳ {trend_str}\n"
                     else:
-                        body_msg += f"▫️ <b>[당일]</b> 실시간 VWAP: ${base_vwap:,.2f}\n"
+                        body_msg += f"▫️ 당일 VWAP: ${base_vwap:,.2f}\n"
                         
                     if rolling_tp > 0:
                         body_msg += f"▫️ 롤링 5분 TP(현재가): ${rolling_tp:,.2f}\n"
                     
                     gap_color = "🔴" if gap_pct < 0 else "🟢"
-                    body_msg += f"▫️ 5분 이탈률(Gap): {gap_color} <b>{gap_pct:+.2f}%</b> (타격: -0.01% 이하)\n"
-                    body_msg += f"▫️ 독립 물량: {avwap_qty}주 (평단 ${avwap_avg:.2f})\n"
+                    body_msg += f"▫️ 5분 이탈(Gap): {gap_color} {gap_pct:+.2f}%\n"
+                    body_msg += f" ↳ (타격: -0.01% 이하)\n"
+                    body_msg += f"▫️ 독립 물량/평단: {avwap_qty}주 / ${avwap_avg:.2f}\n"
                     body_msg += f"▫️ 작전 상태: <b>{avwap_status}</b>\n"
                     
                 if is_trade_active:
@@ -858,4 +860,3 @@ class TelegramView:
             [InlineKeyboardButton("💎 SOXL + TQQQ 통합", callback_data="TICKER:ALL")]
         ]
         return f"🔄 <b>[ 운용 종목 선택 ]</b>\n현재: <b>{', '.join(current_tickers)}</b>", InlineKeyboardMarkup(keyboard)
-
