@@ -13,6 +13,7 @@
 # 🚨 MODIFIED: [V42.07 핫픽스] 시작 메시지의 옴니 매트릭스 국면 판별 시간(10:20 EST)을 서머타임에 맞춰 KST(23:20/00:20)로 동적 변환 및 시계열 최하단으로 이동 렌더링 이식 완료.
 # 🚨 MODIFIED: [V42.08 핫픽스] 듀얼 모멘텀 암살자 기초자산(SOXX) 레이더 순서 변경 (실시간 ➔ 5분평균) 및 갭(%) 산출 렌더링 이식 완료.
 # 🚨 MODIFIED: [V42.09 핫픽스] 듀얼 모멘텀 타임쉴드 대기 메시지 시간(10:20 EST)을 서머타임 연동 한국시간(KST 23:20/00:20)으로 팩트 교정 완료.
+# 🚨 MODIFIED: [V42.10 핫픽스] 5분 평균 VWAP 갭(Gap) 산출 공식 정방향((실시간-5분평균)/5분평균) 팩트 교정 완료.
 # ==========================================================
 import os
 import math
@@ -260,7 +261,7 @@ class TelegramView:
         page_items = history_data[start_idx:end_idx]
 
         msg = "🚀 <b>[ PIPIOS 퀀트 엔진 패치노트 ]</b>\n"
-        msg += "▫️ 현재 시스템: <code>V42.09 옴니 매트릭스 듀얼 코어</code>\n\n"
+        msg += "▫️ 현재 시스템: <code>V42.10 옴니 매트릭스 듀얼 코어</code>\n\n"
         
         for item in page_items:
             if isinstance(item, str):
@@ -539,7 +540,8 @@ class TelegramView:
                 final_msg += f"▫️ 실시간 VWAP: ${base_vwap:,.2f} ({rt_gap:+.2f}%)\n"
                 
                 if avg_vwap_5m > 0 and base_vwap > 0:
-                    avg_5m_gap = ((avg_vwap_5m - base_vwap) / base_vwap) * 100
+                    # 🚨 [V42.10 핫픽스] 갭 산출 공식 정방향 교정
+                    avg_5m_gap = ((base_vwap - avg_vwap_5m) / avg_vwap_5m) * 100
                     final_msg += f"▫️ 5분 평균 VWAP: ${avg_vwap_5m:,.2f} ({avg_5m_gap:+.2f}%)\n"
                 elif avg_vwap_5m > 0:
                     final_msg += f"▫️ 5분 평균 VWAP: ${avg_vwap_5m:,.2f}\n"
