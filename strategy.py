@@ -5,6 +5,7 @@
 # NEW: [V40.XX 옴니 매트릭스 절대 헌법] TQQQ(V14) / SOXS(V-REV) 런타임 강제 라우팅(Bypass) 쉴드 이식
 # 🚨 MODIFIED: [V40.XX 옴니 매트릭스 전면 수술] 후행성 60MA/120MA 엔진 전면 소각 및
 # 전일 VWAP vs 당일 실시간 VWAP 동행 지표(Coincident Indicator) 듀얼 모멘텀 엔진 수신 및 라우팅 락온
+# 🚨 MODIFIED: [V43.00 작전 통제실 복구] AVWAP 사용자가 설정하는 커스텀 목표 수익률(Target) 및 근무 모드(조기퇴근/다중출장) 파라미터를 하위 플러그인(strategy_v_avwap)으로 전달하는 라우터 배선 복구 완료.
 # ==========================================================
 import logging
 import pandas as pd
@@ -198,8 +199,13 @@ class InfiniteStrategy:
                     "msg": f"⛔ AVWAP 셧다운: {omni_filter['msg']}"
                 }
 
+        # 🚨 [V43.00 복원] config에서 커스텀 파라미터(목표 수익률, 근무 모드)를 동적으로 추출하여 플러그인에 전달
+        target_profit = getattr(self.cfg, 'get_avwap_target_profit', lambda x: 4.0)(exec_ticker)
+        is_multi_strike = getattr(self.cfg, 'get_avwap_multi_strike_mode', lambda x: False)(exec_ticker)
+
         return self.v_avwap_plugin.get_decision(
             base_ticker=base_ticker, exec_ticker=exec_ticker, base_curr_p=base_curr_p, exec_curr_p=exec_curr_p, 
             base_day_open=base_day_open, avwap_avg_price=avg_price, avwap_qty=qty, avwap_alloc_cash=alloc_cash, 
-            context_data=context_data, df_1min_base=df_1min_base, now_est=now_est, avwap_state=avwap_state
+            context_data=context_data, df_1min_base=df_1min_base, now_est=now_est, avwap_state=avwap_state,
+            target_profit=target_profit, is_multi_strike=is_multi_strike # 🚨 V43.00 추가된 파라미터
         )

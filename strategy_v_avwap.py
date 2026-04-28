@@ -5,10 +5,10 @@
 # 🚨 [V29.03 팩트 수술] 기억상실(Amnesia) 엣지 케이스 방어막 (Persistence 엔진 탑재)
 # 🚨 [V30.09 핫픽스] pytz 영구 적출 및 ZoneInfo('America/New_York') 이식
 # 🚨 MODIFIED: [V31.50 그랜드 수술] 20MA 방어막 영구 소각 및 '전일 정규장 VWAP' 산출 엔진 탑재 완료.
-# 🚨 MODIFIED: [V32.00 백테스트 팩트 락온] 동적 파라미터 전면 소각. +4.0% 고정 익절 및 -8.0% 하드스탑 하드코딩 완료.
 # 🚨 MODIFIED: [V32.00 방어막] 2차 손절망(재진입) 환각을 영구 차단하는 13계명 백신 주석 이식 완료.
 # 🚨 MODIFIED: [V41.XX 파격적 수술] 0% 쿨다운, 갭 타격, 손절 셧다운 전면 폐기 & 무제한 VWAP 모멘텀 돌파 엔진 이식.
 # 🚨 MODIFIED: [V42.12 그랜드 핫픽스] 부등호 논리 완벽 원상 복구! (당일 > 5분평균 = 상승 롱 / 당일 < 5분평균 = 하락 숏)
+# 🚨 MODIFIED: [V43.00 작전 통제실 복구] 사용자가 설정한 커스텀 목표 수익률(Target) 수신 및 조기퇴근/다중출장 모드 연동 엔진 대수술 완료.
 # ==========================================================
 import logging
 import datetime
@@ -24,9 +24,9 @@ class VAvwapHybridPlugin:
     def __init__(self):
         self.plugin_name = "AVWAP_HYBRID_DUAL"
         self.leverage = 3.0             
-        # 🚨 [팩트 락온] 백테스트 챔피언 파라미터 (Option B) 하드코딩
+        # 🚨 [팩트 락온] 백테스트 챔피언 파라미터 하드코딩 유지
         self.base_stop_loss_pct = 0.08 / 3.0  # 레버리지 3배 환산 시 -8.0% 하드스탑 고정
-        self.base_target_pct = 0.04           # +4.0% 고정 익절
+        # self.base_target_pct = 0.04 # 🚨 [V43.00 삭제] 하드코딩 소각. 런타임에 동적으로 주입받음.
         
     def _get_logical_date_str(self, now_est):
         if now_est.hour < 4 or (now_est.hour == 4 and now_est.minute < 5):
@@ -151,6 +151,10 @@ class VAvwapHybridPlugin:
         avwap_avg_price = avwap_avg_price if avwap_avg_price > 0 else kwargs.get('avwap_avg_price', kwargs.get('avg_price', 0.0))
         avwap_alloc_cash = avwap_alloc_cash if avwap_alloc_cash > 0 else kwargs.get('alloc_cash', kwargs.get('avwap_alloc_cash', 0.0))
         
+        # 🚨 [V43.00 복구] kwargs로 전달받은 커스텀 파라미터 (없으면 기존 백테스트 챔피언 세팅인 4% / 출장모드 유지)
+        target_profit_pct = kwargs.get('target_profit', 4.0) / 100.0
+        is_multi_strike = kwargs.get('is_multi_strike', False)
+        
         if now_est is None:
             now_est = datetime.datetime.now(ZoneInfo('America/New_York'))
             
@@ -232,13 +236,20 @@ class VAvwapHybridPlugin:
             base_equivalent_return = exec_return / self.leverage
             
             if base_equivalent_return <= -self.base_stop_loss_pct:
-                # 🚨 [팩트 락온] -8.0% 하드스탑
-                reason = f'HARD_STOP_손절(-8.0%)_즉각재진입가능'
+                # 🚨 [팩트 락온] -8.0% 하드스탑 피격 시 (무조건 셧다운 락온)
+                avwap_state["shutdown"] = True
+                self.save_state(exec_ticker, now_est, avwap_state)
+                reason = f'HARD_STOP_손절(-8.0%)_당일영구동결'
                 return _build_res('SELL', reason, qty=safe_qty, target_price=0.0)
             
-            if exec_return >= self.base_target_pct:
-                # 🚨 [팩트 락온] +4.0% 고정 익절
-                reason = f'MULTI_STRIKE_TAKE(+4.0%)'
+            if exec_return >= target_profit_pct: # 🚨 V43.00: 커스텀 타겟 적용
+                # 🚨 [V43.00] 조기 퇴근 모드일 경우 익절 성공 시 셧다운 락온
+                if not is_multi_strike:
+                    avwap_state["shutdown"] = True
+                    self.save_state(exec_ticker, now_est, avwap_state)
+                    reason = f'조기퇴근_익절(+{target_profit_pct*100:.1f}%)_당일영구동결'
+                else:
+                    reason = f'MULTI_STRIKE_TAKE(+{target_profit_pct*100:.1f}%)_즉각재진입가능'
                 return _build_res('SELL', reason, qty=safe_qty, target_price=0.0)
 
             if curr_time >= time_1555:
@@ -256,7 +267,7 @@ class VAvwapHybridPlugin:
             return _build_res('WAIT', '매크로_데이터_수집대기')
 
         if avwap_state.get('shutdown', False):
-            return _build_res('WAIT', '15:55_강제청산_당일영구동결')
+            return _build_res('WAIT', '작전완수_또는_강제청산으로_인한_당일영구동결') # 메시지 범용으로 수정
 
         if curr_time < time_1020:
             return _build_res('WAIT', '10:20_이전_타임쉴드_대기')
@@ -280,3 +291,4 @@ class VAvwapHybridPlugin:
             return _build_res('WAIT', '순수현금예산_부족_관망')
             
         return _build_res('WAIT', '타점_대기중')
+

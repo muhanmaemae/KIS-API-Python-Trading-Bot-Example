@@ -17,6 +17,7 @@
 # NEW: [V40.XX 옴니 매트릭스] SOXL/SOXS 양방향 듀얼 모멘텀 플러그인 연동 및 390분 U-Curve 엔진 탑재
 # 🚨 MODIFIED: [V42.00 아키텍처 개편] SOXS 메인 장부 전면 폐기. 오리지널(SOXL, TQQQ) 및 V-REV(SOXL 전용) 2대 트리 구조 확립.
 # 🚨 MODIFIED: [V42.02 핫픽스] 로컬 캐시 오염 방어. active_tickers 반환 시 SOXS 강제 필터링 적출 적용.
+# 🚨 MODIFIED: [V43.00 작전 통제실 복구] AVWAP 사용자가 설정하는 커스텀 목표 수익률(TARGET) 저장소 복원 수술 완료.
 # ==========================================================
 import json
 import os
@@ -78,6 +79,7 @@ class ConfigManager:
             "SNIPER_BUY_LOCKED": "data/sniper_buy_locked.json",
             "SNIPER_SELL_LOCKED": "data/sniper_sell_locked.json",
             "AVWAP_MULTI_STRIKE_CFG": "data/avwap_multi_strike.json", 
+            "AVWAP_TARGET_CFG": "data/avwap_target.json", # 🚨 V43.00 복구된 커스텀 수익률 메모리
             "VREV_GAP_SWITCH_CFG": "data/vrev_gap_switch.json",       
             "VREV_GAP_THRESH_CFG": "data/vrev_gap_thresh.json"        
         }
@@ -89,6 +91,7 @@ class ConfigManager:
         self.DEFAULT_COMPOUND = {"SOXL": 70.0, "TQQQ": 70.0}
         self.DEFAULT_SNIPER_MULTIPLIER = {"SOXL": 1.0, "TQQQ": 0.9}
         self.DEFAULT_FEE = {"SOXL": 0.25, "TQQQ": 0.25} 
+        self.DEFAULT_AVWAP_TARGET = {"SOXL": 4.0, "SOXS": 4.0} # 🚨 기본 4.0%
         
         self._escrow_cache = {}
         self._locks_mutex = threading.Lock()
@@ -726,6 +729,7 @@ class ConfigManager:
         d[ticker] = bool(v)
         self._save_json(self.FILES["MANUAL_VWAP_CFG"], d)
 
+    # 🚨 [V43.00 복원] 근무 모드 (다중 출장 vs 조기 퇴근) 
     def get_avwap_multi_strike_mode(self, ticker): 
         return self._load_json(self.FILES.get("AVWAP_MULTI_STRIKE_CFG", "data/avwap_multi_strike.json"), {}).get(ticker, False)
         
@@ -733,6 +737,15 @@ class ConfigManager:
         d = self._load_json(self.FILES.get("AVWAP_MULTI_STRIKE_CFG", "data/avwap_multi_strike.json"), {})
         d[ticker] = bool(v)
         self._save_json(self.FILES.get("AVWAP_MULTI_STRIKE_CFG", "data/avwap_multi_strike.json"), d)
+
+    # 🚨 [V43.00 복원] AVWAP 커스텀 목표 수익률(Target Profit)
+    def get_avwap_target_profit(self, ticker): 
+        return float(self._load_json(self.FILES.get("AVWAP_TARGET_CFG", "data/avwap_target.json"), self.DEFAULT_AVWAP_TARGET).get(ticker, 4.0))
+        
+    def set_avwap_target_profit(self, ticker, v):
+        d = self._load_json(self.FILES.get("AVWAP_TARGET_CFG", "data/avwap_target.json"), self.DEFAULT_AVWAP_TARGET)
+        d[ticker] = float(v)
+        self._save_json(self.FILES.get("AVWAP_TARGET_CFG", "data/avwap_target.json"), d)
 
     def get_vrev_gap_switching_mode(self, ticker): 
         return self._load_json(self.FILES.get("VREV_GAP_SWITCH_CFG", "data/vrev_gap_switch.json"), {}).get(ticker, False)
@@ -777,7 +790,6 @@ class ConfigManager:
     def get_secret_mode(self): return self._load_file(self.FILES["SECRET_MODE"]) == 'True'
     def set_secret_mode(self, v): self._save_file(self.FILES["SECRET_MODE"], str(v))
     
-    # MODIFIED: [V42.02] active_tickers에서 SOXS 강제 적출 (좀비 파일 필터링)
     def get_active_tickers(self): 
         tickers = self._load_json(self.FILES["TICKER"], ["SOXL", "TQQQ"])
         return [t for t in tickers if t != "SOXS"]
@@ -788,3 +800,4 @@ class ConfigManager:
         v = self._load_file(self.FILES["CHAT_ID"])
         return int(v) if v else None
     def set_chat_id(self, v): self._save_file(self.FILES["CHAT_ID"], v)
+

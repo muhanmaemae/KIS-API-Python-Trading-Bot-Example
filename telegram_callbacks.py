@@ -23,6 +23,7 @@
 # 🚨 MODIFIED: [V42.00 아키텍처 개편] SOXS 메인 종목 모드 전환 영구 락다운 및 듀얼 모멘텀 티커 라우팅 팩트 정립
 # 🚨 MODIFIED: [V42.01 갭 스위칭 자율주행] 수동 제어(ON/OFF/THRESH_SET) 콜백 라우터 영구 소각
 # 🚨 MODIFIED: [V42.02 핫픽스] 운용 종목 선택 메뉴(/ticker)에서 SOXS 듀얼 콤보 라우팅 원천 차단 (팻핑거 방어)
+# 🚨 MODIFIED: [V43.00 작전 통제실 복구] AVWAP 커스텀 목표수익률(Target) 및 근무모드(조기퇴근/출장) 변경 콜백(AVWAP_SET) 라우팅 신설 완료.
 # ==========================================================
 import logging
 import datetime
@@ -711,6 +712,25 @@ class TelegramCallbacks:
                     mode_txt = "📉 LOC 단일 타격 (초안정성)"
                     
                 await query.edit_message_text(f"✅ <b>[{ticker}]</b> 퀀트 엔진이 <b>V14 무매4</b> 모드로 전환되었습니다.\n▫️ <b>집행 방식:</b> {mode_txt}\n▫️ /sync 명령어에서 변경된 지시서를 확인하세요.", parse_mode='HTML')
+
+        # 🚨 [V43.00 복원] AVWAP 수익률 및 모드 스위칭 처리 라우터
+        elif action == "AVWAP_SET":
+            action_type = sub
+            ticker = data[2]
+            
+            if action_type == "TARGET":
+                controller.user_states[chat_id] = f"CONF_AVWAP_TARGET_{ticker}"
+                await context.bot.send_message(chat_id, f"🎯 <b>[{ticker}] AVWAP 목표 수익률(%)</b>을 설정합니다.\n숫자만 입력하세요. (예: 2.0, 3.5, 4.0)\n※ -8.0% 하드스탑 컷은 안전을 위해 고정됩니다.", parse_mode='HTML')
+            elif action_type == "EARLY":
+                self.cfg.set_avwap_multi_strike_mode(ticker, False)
+                msg, markup = self.view.get_avwap_console_menu(ticker)
+                await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
+                await query.answer("✅ 조기퇴근 모드(1회 익절)로 전환되었습니다.", show_alert=False)
+            elif action_type == "MULTI":
+                self.cfg.set_avwap_multi_strike_mode(ticker, True)
+                msg, markup = self.view.get_avwap_console_menu(ticker)
+                await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
+                await query.answer("✅ 무제한 다중 출장 모드로 전환되었습니다.", show_alert=False)
 
         elif action == "AVWAP":
             if sub == "MENU":

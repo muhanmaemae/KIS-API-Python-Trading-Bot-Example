@@ -10,6 +10,7 @@
 # MODIFIED: [V30.09 핫픽스] pytz 소각 및 ZoneInfo('America/New_York') 이식으로 타임존 무결성 달성
 # 🚨 MODIFIED: [V32.00] 12차 AVWAP 백테스트 팩트 반영. 불필요해진 동적 파라미터(AVWAP_TARGET 등) 텍스트 입력 라우터 전면 소각.
 # NEW: [V40.XX 옴니 매트릭스] V-REV 장막판 갭 스위칭 임계치(Gap Threshold) 텍스트 수신 라우터 신설 탑재
+# 🚨 MODIFIED: [V43.00 작전 통제실 복구] AVWAP 사용자가 설정하는 커스텀 목표 수익률(Target) 텍스트 수신 라우터 부활 수술 완료.
 # ==========================================================
 # NEW: [리팩토링 2단계] 유저 텍스트 입력 및 상태 기계(State Machine) 독립 클래스 분리
 import logging
@@ -129,12 +130,25 @@ class TelegramStates:
                     
                 return
 
-            # MODIFIED: [V32.00] AVWAP_TARGET 텍스트 입력 라우터 전면 소각 완료.
-
             val = float(text)
             parts = state.split("_")
             
-            if state.startswith("SEED"):
+            # 🚨 [V43.00 복원] AVWAP 타겟 수익률 설정 라우터
+            if state.startswith("CONF_AVWAP_TARGET"):
+                if val <= 0:
+                    return await update.message.reply_text("❌ 오류: 목표 수익률은 0보다 커야 합니다.")
+                ticker = parts[3]
+                if hasattr(self.cfg, 'set_avwap_target_profit'):
+                    self.cfg.set_avwap_target_profit(ticker, val)
+                
+                # 설정 후 다시 콘솔 렌더링 호출을 위해 뷰 객체 임포트
+                from telegram_view import TelegramView
+                tmp_view = TelegramView(self.cfg)
+                msg, markup = tmp_view.get_avwap_console_menu(ticker)
+                await update.message.reply_text(f"✅ <b>[{ticker}] AVWAP 목표 수익률이 +{val:.1f}%로 즉시 변경되었습니다!</b>", parse_mode='HTML')
+                await update.message.reply_text(msg, reply_markup=markup, parse_mode='HTML')
+
+            elif state.startswith("SEED"):
                 if val < 0:
                     return await update.message.reply_text("❌ 오류: 시드머니는 0 이상이어야 합니다.")
                     
@@ -190,12 +204,9 @@ class TelegramStates:
                 
                 await update.message.reply_text(f"✅ [{ticker}] 수동 액면 보정 완료\n▫️ 모든 장부 기록이 {val}배 비율로 정밀하게 소급 조정되었습니다.")
 
-            # NEW: [V40.XX 옴니 매트릭스] V-REV 갭 스위칭 임계치 수신 라우터
             elif state.startswith("VREV_GAP"):
-                # state 형태: "VREV_GAP_SOXL" -> parts[0]='VREV', parts[1]='GAP', parts[2]='SOXL'
                 ticker = parts[2]
                 
-                # 🚨 사용자 팻핑거(양수 입력) 방어: 음수로 강제 역전
                 if val > 0:
                     val = -val
                     

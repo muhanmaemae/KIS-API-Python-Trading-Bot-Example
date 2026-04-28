@@ -7,6 +7,7 @@
 # 🚨 MODIFIED: [V42.13 핫픽스] 5분 평균 VWAP 갭 렌더링 수식을 (5분평균-실시간)/실시간으로 교정하여 직관적인 UI(+) 제공.
 # 🚨 MODIFIED: [V42.14 핫픽스] 모멘텀 돌파 UI 텍스트 부등호(5분평균 > 당일 = 롱) 팩트 동기화 완료.
 # 🚨 MODIFIED: [V42.15 핫픽스] /settlement 및 락온 경고창에 남아있던 과거의 잔재(2%/-6%)를 4.0%/-8.0%로 팩트 교정 완료.
+# 🚨 MODIFIED: [V43.00 작전 통제실 복구] AVWAP 콘솔 하드코딩 완전 철거. 커스텀 목표수익률(Target) 및 근무모드(조기퇴근/출장) 동적 렌더링 및 UI 버튼 신설 탑재 완료.
 # ==========================================================
 import os
 import math
@@ -17,7 +18,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from PIL import Image, ImageDraw, ImageFont
 
 class TelegramView:
-    def __init__(self):
+    def __init__(self, config=None): # 🚨 V43.00: config 의존성 주입을 위한 파라미터 추가
+        self.cfg = config
         self.bold_font_paths = [
             "NanumGothicBold.ttf", "font_bold.ttf", "font.ttf",
             "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf", 
@@ -208,14 +210,13 @@ class TelegramView:
         return msg, InlineKeyboardMarkup(keyboard)
 
     def get_avwap_warning_menu(self, ticker):
-        msg = f"🛑 <b>[{ticker}] V41 차세대 AVWAP 무장 해제 및 경고</b>\n\n"
+        msg = f"🛑 <b>[{ticker}] 차세대 AVWAP 듀얼 모멘텀 무장 해제 및 경고</b>\n\n"
         msg += "현재 <b>AVWAP 암살자 모드</b> 가동을 지시하셨습니다.\n"
         msg += "이 전술은 잉여 현금의 100%를 장중 딥매수 모멘텀 타격에 쏟아붓는 초공격형 옵션입니다.\n\n"
-        msg += "⚠️ <b>[ 파괴적 제약 사항 (V41 락온) ]</b>\n"
+        msg += "⚠️ <b>[ 파괴적 제약 사항 (V43 락온) ]</b>\n"
         msg += "1. 기존 V14의 상방 스나이퍼 기능은 즉시 영구 셧다운됩니다.\n"
         msg += "2. V-REV 큐(Queue)와는 물량과 평단가가 100% 분리되어 독립 연산됩니다.\n"
-        # 🚨 [V42.15 핫픽스] 8.0% 경고창 팩트 교정
-        msg += "3. 손절(-8.0%) 피격 시에도 당일 영구 동결이 해제되고 즉각 다음 타점을 탐색합니다.\n\n"
+        msg += "3. 손절(-8.0%) 피격 시 뇌동매매 방지를 위해 <b>그 즉시 당일 매매가 영구 동결(Shut-down)</b> 됩니다.\n\n"
         msg += "포트폴리오 매니저의 최종 승인을 대기합니다."
         
         keyboard = [
@@ -225,15 +226,32 @@ class TelegramView:
         return msg, InlineKeyboardMarkup(keyboard)
 
     def get_avwap_console_menu(self, t):
-        msg = f"🔫 <b>[ {t} V41 파격적 VWAP 모멘텀 돌파 콘솔 ]</b>\n\n"
-        msg += "💼 <b>현재 가동 모드: [ 무제한 다중 타격 (Multi-Strike) 락온 ]</b>\n"
+        # 🚨 [V43.00 복원] config에서 동적으로 값을 읽어와 렌더링
+        is_multi_strike = False
+        target_pct = 4.0
+        
+        if self.cfg:
+            is_multi_strike = getattr(self.cfg, 'get_avwap_multi_strike_mode', lambda x: False)(t)
+            target_pct = getattr(self.cfg, 'get_avwap_target_profit', lambda x: 4.0)(t)
+            
+        mode_text = "무제한 다중 타격 (Multi-Strike) 락온" if is_multi_strike else "조기 퇴근 (One & Done) 락온"
+        mode_desc = "목표 수익 도달 시에도 <b>쿨다운 없이 즉각 다음 타점을 무제한 스캔</b>합니다." if is_multi_strike else "목표 수익 도달 시 <b>즉시 봇 전원을 차단하고 당일 매매를 영구 동결(퇴근)</b>합니다."
+        
+        msg = f"🔫 <b>[ {t} 차세대 AVWAP 듀얼 모멘텀 콘솔 ]</b>\n\n"
+        msg += f"💼 <b>현재 가동 모드: [ {mode_text} ]</b>\n"
         msg += f"▫️ 당일 실시간 VWAP이 전일 VWAP과 5분 평균 VWAP을 동시에 돌파하는 <b>강력한 모멘텀</b>에서만 타격합니다.\n"
-        msg += f"▫️ 목표 수익 도달 또는 손절(-8.0%) 피격 시에도 <b>쿨다운 없이 즉각 다음 타점을 무제한 스캔</b>합니다.\n"
-        msg += f"▫️ <b>[오버나이트 방어]</b> 15:55 EST 타임스탑 강제 청산 시에만 당일 매매가 영구 동결됩니다.\n\n"
-        msg += f"🎯 <b>목표 익절가: 진입가 대비 +4.0% (고정)</b>\n"
-        msg += f"🚨 <b>하드스탑 컷: 진입가 대비 -8.0% (고정)</b>\n"
+        msg += f"▫️ {mode_desc}\n"
+        msg += f"▫️ <b>[오버나이트 방어]</b> 15:55 EST 타임스탑 강제 청산 시에 당일 매매가 동결됩니다.\n\n"
+        msg += f"🎯 <b>목표 익절가: 진입가 대비 +{target_pct:.1f}% (커스텀)</b>\n"
+        msg += f"🚨 <b>하드스탑 컷: 진입가 대비 -8.0% (고정/피격시 당일 동결)</b>\n"
 
+        # 🚨 [V43.00 복원] UI 커스텀 제어 스위치 버튼 추가
+        toggle_label = "💼 조기퇴근 모드로 전환" if is_multi_strike else "🔁 다중출장 모드로 전환"
+        toggle_action = "EARLY" if is_multi_strike else "MULTI"
+        
         keyboard = [
+            [InlineKeyboardButton(f"🎯 목표 수익률(%) 변경", callback_data=f"AVWAP_SET:TARGET:{t}")],
+            [InlineKeyboardButton(toggle_label, callback_data=f"AVWAP_SET:{toggle_action}:{t}")],
             [InlineKeyboardButton("🔙 닫기 (설정 락온 완료)", callback_data=f"RESET:CANCEL")]
         ]
         return msg, InlineKeyboardMarkup(keyboard)
@@ -255,7 +273,7 @@ class TelegramView:
         page_items = history_data[start_idx:end_idx]
 
         msg = "🚀 <b>[ PIPIOS 퀀트 엔진 패치노트 ]</b>\n"
-        msg += "▫️ 현재 시스템: <code>V42.15 옴니 매트릭스 듀얼 코어</code>\n\n"
+        msg += "▫️ 현재 시스템: <code>V43.00 작전 통제실 복구</code>\n\n"
         
         for item in page_items:
             if isinstance(item, str):
@@ -523,7 +541,7 @@ class TelegramView:
             prev_vwap = ref_info.get('avwap_prev_vwap', 0.0)
             avg_vwap_5m = ref_info.get('avwap_avg_vwap_5m', 0.0) 
             
-            final_msg += f"⚔️ <b>[ V41 VWAP 듀얼 모멘텀 암살자 ]</b>\n"
+            final_msg += f"⚔️ <b>[ 차세대 AVWAP 듀얼 모멘텀 암살자 ]</b>\n"
             final_msg += f"▫️ 기초자산(Base): <b>{base_tkr}</b>\n"
             
             if prev_vwap > 0:
@@ -557,8 +575,14 @@ class TelegramView:
                     label = "롱" if t in ["SOXL", "TQQQ"] else "숏"
                     final_msg += f"\n🎯 <b>[ {t} ({label}) ]</b>\n"
                     
+                    # 🚨 [V43.00 복원] 근무 모드에 따른 아이콘 표출
+                    is_multi_strike = getattr(self.cfg, 'get_avwap_multi_strike_mode', lambda x: False)(t) if self.cfg else False
+                    strike_icon = "💼 무제한 출장" if is_multi_strike else "🏠 조기퇴근(1회)"
+                    
                     if avwap_strikes > 0:
-                        final_msg += f"💼 <b>다중 출장 모드: {avwap_strikes}회차 교전 완료</b>\n"
+                        final_msg += f"💼 <b>{strike_icon} 모드: {avwap_strikes}회차 교전 완료</b>\n"
+                    else:
+                        final_msg += f"💼 <b>{strike_icon} 모드 가동 중</b>\n"
                         
                     if prev_vwap > 0:
                         if t == "SOXS":
@@ -625,8 +649,12 @@ class TelegramView:
                 msg += "▫️ 막판 갭 스위칭: <b>🤖 자율주행 (상승장 자동 가동)</b>\n"
                 
                 if hasattr(config, 'get_avwap_hybrid_mode') and config.get_avwap_hybrid_mode(t):
-                    # 🚨 [V42.15 핫픽스] 4.0% 팩트 교정
-                    status_label = f"💼 V41 다중 출장 락온 (+4.0% 고정)"
+                    # 🚨 [V43.00 복원] 사용자가 설정한 목표 수익률 및 근무 모드 렌더링
+                    av_target = getattr(config, 'get_avwap_target_profit', lambda x: 4.0)(t)
+                    is_multi = getattr(config, 'get_avwap_multi_strike_mode', lambda x: False)(t)
+                    mode_str = "다중 출장" if is_multi else "조기 퇴근"
+                    
+                    status_label = f"💼 {mode_str} 락온 (+{av_target:.1f}%)"
                     msg += f"▫️ AVWAP 암살자: <b>{status_label}</b>\n"
                 elif hasattr(config, 'get_avwap_hybrid_mode'):
                     msg += f"▫️ AVWAP 암살자: <b>비활성 (OFF)</b>\n"
@@ -874,3 +902,4 @@ class TelegramView:
             [InlineKeyboardButton("💎 오리지널 TQQQ + SOXL 듀얼 콤보", callback_data="TICKER:ALL")]
         ]
         return f"🔄 <b>[ 운용 종목 선택 ]</b>\n현재 가동중: <b>{', '.join(current_tickers)}</b>", InlineKeyboardMarkup(keyboard)
+
