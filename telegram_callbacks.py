@@ -21,6 +21,7 @@
 # 🚨 MODIFIED: [V32.00] 12차 백테스트 팩트 반영. 불필요해진 AVWAP 동적 파라미터(TARGET_SET, GAP_SET) 콜백 라우팅 전면 소각 완료.
 # NEW: [V40.XX 옴니 매트릭스] SOXL/SOXS 듀얼 모멘텀 티커 스위칭 완벽 분기 및 V-REV/AVWAP 권한 개방 완료
 # 🚨 MODIFIED: [V42.00 아키텍처 개편] SOXS 메인 종목 모드 전환 영구 락다운 및 듀얼 모멘텀 티커 라우팅 팩트 정립
+# 🚨 MODIFIED: [V43.00 갭 스위칭 자율주행] 수동 제어(ON/OFF/THRESH_SET) 콜백 라우터 영구 소각
 # ==========================================================
 import logging
 import datetime
@@ -587,7 +588,6 @@ class TelegramCallbacks:
             ticker = data[2]
             current_ver = self.cfg.get_version(ticker)
             
-            # 🚨 [V42.00 절대 헌법] 팻핑거 백엔드 원천 차단
             if ticker == "TQQQ" and new_ver == "V_REV":
                 await query.answer("⚠️ [절대 헌법 위반] TQQQ는 V14 무매4 전용 아키텍처입니다. 전환이 차단되었습니다.", show_alert=True)
                 return
@@ -649,7 +649,6 @@ class TelegramCallbacks:
             
             target_ver = "V_REV" if mode_type in ["AUTO", "MANUAL"] else "V14"
 
-            # 🚨 [V42.00 절대 헌법] 팻핑거 백엔드 원천 차단
             if ticker == "TQQQ" and target_ver == "V_REV":
                 await query.answer("⚠️ [절대 헌법 위반] TQQQ는 V14 무매4 전용 아키텍처입니다. 전환이 차단되었습니다.", show_alert=True)
                 return
@@ -722,48 +721,6 @@ class TelegramCallbacks:
                     
                 msg, markup = self.view.get_avwap_console_menu(ticker)
                 await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
-                
-        elif action == "VREV_GAP":
-            if sub == "TOGGLE":
-                state = data[2]
-                ticker = data[3]
-                is_on = (state == "ON")
-                if hasattr(self.cfg, 'set_vrev_gap_switching_mode'):
-                    self.cfg.set_vrev_gap_switching_mode(ticker, is_on)
-                    status_text = "🟢 가동(ON)" if is_on else "🔴 비활성(OFF)"
-                    await query.answer(f"[{ticker}] V-REV 장막판 갭 스위칭: {status_text}", show_alert=False)
-                    
-                    is_gap_switch = getattr(self.cfg, 'get_vrev_gap_switching_mode', lambda x: False)(ticker)
-                    gap_th = getattr(self.cfg, 'get_vrev_gap_threshold', lambda x: -0.67)(ticker)
-                    msg, markup = self.view.get_vrev_gap_console_menu(ticker, is_gap_switch, gap_th)
-                    await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
-                    
-            elif sub == "THRESH_SET":
-                ticker = data[2]
-                controller.user_states[chat_id] = f"VREV_GAP_{ticker}"
-                await query.answer("👇 확인을 누르시고, 화면 맨 아래 채팅창에 임계치(숫자)를 쳐주세요!", show_alert=True)
-                msg = f"📉 <b>[{ticker} V-REV 갭 스위칭 임계치 설정]</b>\n\n▫️ 장 마감 30분 전 1분 타임 슬라이싱 중, 기초자산(SOXX 등) VWAP 대비 <b>몇 % 하락 시 전량 스윕 타격</b>할지 입력하세요.\n▫️ 입력 예시: <code>-0.67</code> 또는 <code>-1.5</code>\n▫️ (주의: 반드시 음수 형태로 입력하세요)"
-                await context.bot.send_message(chat_id, msg, parse_mode='HTML')
-
-        elif action == "VREV":
-            if sub == "GAP_ON":
-                ticker = data[2]
-                if hasattr(self.cfg, 'set_vrev_gap_switching_mode'):
-                    self.cfg.set_vrev_gap_switching_mode(ticker, True)
-                if hasattr(controller, 'cmd_settlement'):
-                    await controller.cmd_settlement(update, context)
-            elif sub == "GAP_OFF":
-                ticker = data[2]
-                if hasattr(self.cfg, 'set_vrev_gap_switching_mode'):
-                    self.cfg.set_vrev_gap_switching_mode(ticker, False)
-                if hasattr(controller, 'cmd_settlement'):
-                    await controller.cmd_settlement(update, context)
-            elif sub == "GAP_TARGET_SET":
-                ticker = data[2]
-                controller.user_states[chat_id] = f"VREV_GAP_{ticker}"
-                await query.answer("👇 확인을 누르시고, 화면 맨 아래 채팅창에 임계치(숫자)를 쳐주세요!", show_alert=True)
-                msg = f"📉 <b>[{ticker} 장막판 갭 스위칭 임계치 설정]</b>\n▫️ 장 마감 30분 전 기초자산 VWAP 대비 몇 % 이탈 시 100% 스윕할지 입력하세요.\n▫️ 예: -0.67, -1.0\n▫️ (주의: 반드시 음수 형태로 입력하세요)"
-                await context.bot.send_message(chat_id, msg, parse_mode='HTML')
 
         elif action == "MODE":
             mode_val = sub

@@ -7,6 +7,7 @@
 # NEW: [V40.XX 옴니 매트릭스] SOXS 듀얼 모멘텀 전용 버튼 및 옴니 매트릭스 셧다운 알림 렌더링 엔진 이식
 # 🚨 MODIFIED: [V41.XX 파격적 수술] AVWAP 콘솔 및 지시서 렌더링 텍스트 전면 개조 (쿨다운 철거 및 5분 평균 VWAP 레이더 탑재)
 # 🚨 MODIFIED: [V42.00 아키텍처 개편] SOXS 메인 종목 렌더링 영구 소각 및 계층형 트리 구조(자동/수동 ➔ AVWAP) UI 정비
+# 🚨 MODIFIED: [V43.00 갭 스위칭 자율주행] 수동 제어(Toggle) 스위치 영구 소각 및 자율주행 텍스트 렌더링 교정
 # ==========================================================
 import os
 import math
@@ -236,29 +237,6 @@ class TelegramView:
         ]
         return msg, InlineKeyboardMarkup(keyboard)
 
-    def get_vrev_gap_console_menu(self, t, is_gap_switch, gap_threshold):
-        msg = f"⚡ <b>[ {t} V-REV 장막판 갭 스위칭 콘솔 ]</b>\n\n"
-        msg += "장 마감 30분 전부터 가동되는 VWAP 타임 슬라이싱 중,\n"
-        msg += "기초자산의 VWAP 갭(Gap)이 임계치를 이탈하면 <b>잔여 예산 100%를 즉시 스윕 매수</b>하는 하이재킹 전술입니다.\n\n"
-        
-        status_txt = "🟢 <b>가동 중 (ON)</b>" if is_gap_switch else "⚪ <b>대기 중 (OFF)</b>"
-        msg += f"▫️ 현재 상태: {status_txt}\n"
-        msg += f"▫️ 타격 임계치: <b>기초자산 VWAP 대비 {gap_threshold}% 이하 시</b>\n"
-
-        keyboard = [
-            [
-                InlineKeyboardButton("⚪ OFF로 전환" if is_gap_switch else "🎯 OFF (현재 적용)", callback_data=f"VREV_GAP:TOGGLE:OFF:{t}"),
-                InlineKeyboardButton("🎯 ON (현재 적용)" if is_gap_switch else "⚡ ON으로 전환", callback_data=f"VREV_GAP:TOGGLE:ON:{t}")
-            ],
-            [
-                InlineKeyboardButton(f"📉 타격 갭(Gap) 임계치 설정 (현재: {gap_threshold}%)", callback_data=f"VREV_GAP:THRESH_SET:{t}")
-            ],
-            [
-                InlineKeyboardButton("🔙 닫기", callback_data=f"RESET:CANCEL")
-            ]
-        ]
-        return msg, InlineKeyboardMarkup(keyboard)
-
     def get_version_message(self, history_data, page_index=None):
         ITEMS_PER_PAGE = 5
         total_pages = max(1, (len(history_data) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
@@ -461,9 +439,8 @@ class TelegramView:
                 if omni_msg:
                     body_msg += f"⛔ <b>옴니 매트릭스 락다운:</b> {omni_msg}\n"
                 
-                if t_info.get('vrev_gap_switch', False):
-                    gap_th = t_info.get('vrev_gap_thresh', -0.67)
-                    body_msg += f"⚡ <b>[Gap Hijack ON]</b> 기초자산 {gap_th}% 이탈 시 잔여예산 스윕 대기\n"
+                # MODIFIED: [V43.00] 갭 스위칭 자율주행 렌더링 팩트 교정
+                body_msg += f"⚡ <b>[Gap Hijack 🤖자율주행]</b> 상승장 판별 시 잔여예산 스윕 대기\n"
                 
                 raw_guidance = t_info.get('v_rev_guidance', " (가이던스 대기 중)")
                 
@@ -474,7 +451,6 @@ class TelegramView:
                 raw_guidance = raw_guidance.rstrip('\n')
                 body_msg += raw_guidance + "\n"
 
-                # 🚨 MODIFIED: [V41.XX] AVWAP 지시서 렌더링 파이프라인 (5분 평균 VWAP 레이더 표출)
                 if t_info.get('avwap_active', False):
                     avwap_qty = t_info.get('avwap_qty', 0)
                     avwap_avg = t_info.get('avwap_avg', 0.0)
@@ -611,12 +587,8 @@ class TelegramView:
                 msg += f"▫️ 자동복리: {comp_rate}%\n"
                 msg += f"▫️ 증권사 수수료: <b>{fee_rate}%</b>\n"
                 
-                is_gap_switch = getattr(config, 'get_vrev_gap_switching_mode', lambda x: False)(t)
-                gap_thresh = getattr(config, 'get_vrev_gap_threshold', lambda x: -0.67)(t)
-                if is_gap_switch:
-                    msg += f"▫️ 막판 갭 스위칭: <b>🟢 가동중 (임계치 {gap_thresh}%)</b>\n"
-                else:
-                    msg += "▫️ 막판 갭 스위칭: <b>🔴 비활성 (OFF)</b>\n"
+                # MODIFIED: [V43.00] 갭 스위칭 자율주행 팩트 렌더링
+                msg += "▫️ 막판 갭 스위칭: <b>🤖 자율주행 (상승장 자동 가동)</b>\n"
                 
                 if hasattr(config, 'get_avwap_hybrid_mode') and config.get_avwap_hybrid_mode(t):
                     status_label = f"💼 V41 다중 출장 락온 (+2% 고정)"
@@ -632,7 +604,6 @@ class TelegramView:
                 v14_mode_txt = "🕒 VWAP 1분 타임 슬라이싱 (자체엔진)" if is_manual_vwap else "📉 LOC 단일 타격 (초안정성)"
                 msg += f"▫️ 집행: <b>{v14_mode_txt}</b>\n\n"
                 
-            # MODIFIED: [V42.00] 계층형 트리 구조 UI 적용 (TQQQ는 V14 강제 락온)
             if t == "SOXL":
                 row1 = [
                     InlineKeyboardButton("💎 오리지널 V14 세팅", callback_data=f"SET_VER:V14:{t}"),
@@ -648,10 +619,8 @@ class TelegramView:
             if row1:
                 keyboard.append(row1)
 
-            # V-REV 하위 트리 렌더링 (SOXL 전용)
             if ver == "V_REV":
                 is_avwap = config.get_avwap_hybrid_mode(t) if hasattr(config, 'get_avwap_hybrid_mode') else False
-                is_gap_switch = config.get_vrev_gap_switching_mode(t) if hasattr(config, 'get_vrev_gap_switching_mode') else False
                 
                 avwap_txt = "⚔️ 파격적 AVWAP 모멘텀 [ OFF ]"
                 avwap_cb = f"MODE:AVWAP_WARN:{t}" 
@@ -662,17 +631,7 @@ class TelegramView:
                 
                 keyboard.append([InlineKeyboardButton(avwap_txt, callback_data=avwap_cb)])
                 
-                if is_gap_switch:
-                    gap_txt = "⚡ 장막판 갭 스위칭 [ 가동중 ]"
-                    gap_cb = f"VREV:GAP_OFF:{t}"
-                else:
-                    gap_txt = "⚡ 장막판 갭 스위칭 [ OFF ]"
-                    gap_cb = f"VREV:GAP_ON:{t}"
-                keyboard.append([InlineKeyboardButton(gap_txt, callback_data=gap_cb)])
-                
-                if is_gap_switch:
-                    vrev_gap_th = config.get_vrev_gap_threshold(t) if hasattr(config, 'get_vrev_gap_threshold') else -0.67
-                    keyboard.append([InlineKeyboardButton(f"⚙️ 갭 스위칭 임계치 설정 (현재 {vrev_gap_th}%)", callback_data=f"VREV:GAP_TARGET_SET:{t}")])
+                # MODIFIED: [V43.00] 장막판 갭 스위칭 수동 조작 버튼 전면 소각
                 
                 if is_avwap and t == "SOXL":
                     keyboard.append([InlineKeyboardButton(f"🔫 {t} (롱) + SOXS (숏) 모멘텀 콘솔", callback_data=f"AVWAP:MENU:{t}")])
@@ -875,7 +834,6 @@ class TelegramView:
         img.save(fname, format="PNG", quality=100)
         return fname
 
-    # MODIFIED: [V42.00] SOXS 단독 메뉴 소각 및 듀얼 모멘텀 집중
     def get_ticker_menu(self, current_tickers):
         keyboard = [
             [InlineKeyboardButton("🚀 오리지널 TQQQ 단독 운용", callback_data="TICKER:TQQQ")],
