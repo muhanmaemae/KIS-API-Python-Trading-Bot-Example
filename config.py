@@ -15,7 +15,7 @@
 # MODIFIED: [V30.09 핫픽스] pytz 영구 적출 및 ZoneInfo 도입으로 LMT 버그 차단
 # 🚨 MODIFIED: [V32.00 그랜드 수술] 12차 백테스트 팩트 락온. 불필요해진 AVWAP 조기퇴근/동적갭 파라미터 저장소 완전 소각.
 # NEW: [V40.XX 옴니 매트릭스] SOXL/SOXS 양방향 듀얼 모멘텀 플러그인 연동 및 390분 U-Curve 엔진 탑재
-# NEW: [V40.XX 옴니 매트릭스 절대 헌법] TQQQ = V14 고정 / SOXS = V-REV 고정 락온(Lock-on) 이식
+# 🚨 MODIFIED: [V42.00 아키텍처 개편] SOXS 메인 장부 전면 폐기. 오리지널(SOXL, TQQQ) 및 V-REV(SOXL 전용) 2대 트리 구조 확립.
 # ==========================================================
 import json
 import os
@@ -81,14 +81,14 @@ class ConfigManager:
             "VREV_GAP_THRESH_CFG": "data/vrev_gap_thresh.json"        
         }
         
-        self.DEFAULT_SEED = {"SOXL": 6720.0, "TQQQ": 6720.0, "SOXS": 6720.0}
-        self.DEFAULT_SPLIT = {"SOXL": 40.0, "TQQQ": 40.0, "SOXS": 40.0}
-        self.DEFAULT_TARGET = {"SOXL": 12.0, "TQQQ": 10.0, "SOXS": 12.0}
-        # 🚨 [V40.XX 절대 헌법] SOXS의 기본값을 V_REV로 팩트 교정
-        self.DEFAULT_VERSION = {"SOXL": "V14", "TQQQ": "V14", "SOXS": "V_REV"}
-        self.DEFAULT_COMPOUND = {"SOXL": 70.0, "TQQQ": 70.0, "SOXS": 70.0}
-        self.DEFAULT_SNIPER_MULTIPLIER = {"SOXL": 1.0, "TQQQ": 0.9, "SOXS": 1.0}
-        self.DEFAULT_FEE = {"SOXL": 0.25, "TQQQ": 0.25, "SOXS": 0.25} 
+        # MODIFIED: [V42.00] SOXS 메인 설정 전면 폐기
+        self.DEFAULT_SEED = {"SOXL": 6720.0, "TQQQ": 6720.0}
+        self.DEFAULT_SPLIT = {"SOXL": 40.0, "TQQQ": 40.0}
+        self.DEFAULT_TARGET = {"SOXL": 12.0, "TQQQ": 10.0}
+        self.DEFAULT_VERSION = {"SOXL": "V14", "TQQQ": "V14"}
+        self.DEFAULT_COMPOUND = {"SOXL": 70.0, "TQQQ": 70.0}
+        self.DEFAULT_SNIPER_MULTIPLIER = {"SOXL": 1.0, "TQQQ": 0.9}
+        self.DEFAULT_FEE = {"SOXL": 0.25, "TQQQ": 0.25} 
         
         self._escrow_cache = {}
         self._locks_mutex = threading.Lock()
@@ -681,16 +681,14 @@ class ConfigManager:
         d[t] = v
         self._save_json(self.FILES["COMPOUND_CFG"], d)
 
-    # 🚨 [V40.XX 절대 헌법] get_version 조회 락온
+    # MODIFIED: [V42.00 절대 헌법] TQQQ = V14, SOXL = 자유선택 (SOXS는 메인에서 배제되었으므로 안전을 위한 폴백만 남김)
     def get_version(self, t): 
         val = self._load_json(self.FILES["VERSION_CFG"], self.DEFAULT_VERSION).get(t, self.DEFAULT_VERSION.get(t, "V14"))
-        if t == "SOXS": return "V_REV"
         if t == "TQQQ": return "V14"
         return val
         
-    # 🚨 [V40.XX 절대 헌법] set_version 저장 락온
+    # MODIFIED: [V42.00 절대 헌법] 저장 락온 교정
     def set_version(self, t, v):
-        if t == "SOXS": v = "V_REV"
         if t == "TQQQ": v = "V14"
         d = self._load_json(self.FILES["VERSION_CFG"], self.DEFAULT_VERSION)
         d[t] = v
@@ -783,6 +781,7 @@ class ConfigManager:
 
     def get_secret_mode(self): return self._load_file(self.FILES["SECRET_MODE"]) == 'True'
     def set_secret_mode(self, v): self._save_file(self.FILES["SECRET_MODE"], str(v))
+    # MODIFIED: [V42.00] 기본 활성 티커 SOXL, TQQQ로 정비
     def get_active_tickers(self): return self._load_json(self.FILES["TICKER"], ["SOXL", "TQQQ"])
     def set_active_tickers(self, v): self._save_json(self.FILES["TICKER"], v)
     def get_chat_id(self): 

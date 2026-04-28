@@ -5,8 +5,8 @@
 # 🚨 MODIFIED: [V31.50] 1분봉 고정 현재가 탈피, 롤링 5분 TP 팩트 스캔 엔진 지시서에 시각화 표출 
 # 🚨 MODIFIED: [V32.00] 12차 백테스트 팩트 락온. 동적 파라미터 렌더링 소각 및 하드코딩 룰(2%/-6% 셧다운) 고정 표출.
 # NEW: [V40.XX 옴니 매트릭스] SOXS 듀얼 모멘텀 전용 버튼 및 옴니 매트릭스 셧다운 알림 렌더링 엔진 이식
-# NEW: [V40.XX 옴니 매트릭스 절대 헌법] TQQQ(V14 전용) / SOXS(V-REV 전용) 렌더링 버튼 락다운(은폐) 적용
 # 🚨 MODIFIED: [V41.XX 파격적 수술] AVWAP 콘솔 및 지시서 렌더링 텍스트 전면 개조 (쿨다운 철거 및 5분 평균 VWAP 레이더 탑재)
+# 🚨 MODIFIED: [V42.00 아키텍처 개편] SOXS 메인 종목 렌더링 영구 소각 및 계층형 트리 구조(자동/수동 ➔ AVWAP) UI 정비
 # ==========================================================
 import os
 import math
@@ -206,7 +206,6 @@ class TelegramView:
         ]
         return msg, InlineKeyboardMarkup(keyboard)
 
-    # MODIFIED: [V41.XX] AVWAP 경고 텍스트 교정 (셧다운 해제 팩트 반영)
     def get_avwap_warning_menu(self, ticker):
         msg = f"🛑 <b>[{ticker}] V41 차세대 AVWAP 무장 해제 및 경고</b>\n\n"
         msg += "현재 <b>AVWAP 암살자 모드</b> 가동을 지시하셨습니다.\n"
@@ -223,7 +222,6 @@ class TelegramView:
         ]
         return msg, InlineKeyboardMarkup(keyboard)
 
-    # MODIFIED: [V41.XX] AVWAP 콘솔 텍스트 교정 (무제한 타격 팩트 반영)
     def get_avwap_console_menu(self, t):
         msg = f"🔫 <b>[ {t} V41 파격적 VWAP 모멘텀 돌파 콘솔 ]</b>\n\n"
         msg += "💼 <b>현재 가동 모드: [ 무제한 다중 타격 (Multi-Strike) 락온 ]</b>\n"
@@ -634,21 +632,23 @@ class TelegramView:
                 v14_mode_txt = "🕒 VWAP 1분 타임 슬라이싱 (자체엔진)" if is_manual_vwap else "📉 LOC 단일 타격 (초안정성)"
                 msg += f"▫️ 집행: <b>{v14_mode_txt}</b>\n\n"
                 
+            # MODIFIED: [V42.00] 계층형 트리 구조 UI 적용 (TQQQ는 V14 강제 락온)
             if t == "SOXL":
                 row1 = [
-                    InlineKeyboardButton("💎 V14 (무매4)", callback_data=f"SET_VER:V14:{t}"),
-                    InlineKeyboardButton("⚖️ V_REV (역추세)", callback_data=f"SET_VER:V_REV:{t}")
+                    InlineKeyboardButton("💎 오리지널 V14 세팅", callback_data=f"SET_VER:V14:{t}"),
+                    InlineKeyboardButton("⚖️ 역추세 V-REV 세팅", callback_data=f"SET_VER:V_REV:{t}")
                 ]
             elif t == "TQQQ":
                 row1 = [
-                    InlineKeyboardButton("💎 V14 (무매4)", callback_data=f"SET_VER:V14:{t}")
+                    InlineKeyboardButton("💎 오리지널 V14 세팅", callback_data=f"SET_VER:V14:{t}")
                 ]
-            elif t == "SOXS":
-                row1 = [
-                    InlineKeyboardButton("⚖️ V_REV (역추세)", callback_data=f"SET_VER:V_REV:{t}")
-                ]
-            keyboard.append(row1)
+            else:
+                row1 = []
+                
+            if row1:
+                keyboard.append(row1)
 
+            # V-REV 하위 트리 렌더링 (SOXL 전용)
             if ver == "V_REV":
                 is_avwap = config.get_avwap_hybrid_mode(t) if hasattr(config, 'get_avwap_hybrid_mode') else False
                 is_gap_switch = config.get_vrev_gap_switching_mode(t) if hasattr(config, 'get_vrev_gap_switching_mode') else False
@@ -674,8 +674,8 @@ class TelegramView:
                     vrev_gap_th = config.get_vrev_gap_threshold(t) if hasattr(config, 'get_vrev_gap_threshold') else -0.67
                     keyboard.append([InlineKeyboardButton(f"⚙️ 갭 스위칭 임계치 설정 (현재 {vrev_gap_th}%)", callback_data=f"VREV:GAP_TARGET_SET:{t}")])
                 
-                if is_avwap and t in ["SOXL", "SOXS"]:
-                    keyboard.append([InlineKeyboardButton(f"🔫 {t} AVWAP 제어 콘솔", callback_data=f"AVWAP:MENU:{t}")])
+                if is_avwap and t == "SOXL":
+                    keyboard.append([InlineKeyboardButton(f"🔫 {t} (롱) + SOXS (숏) 모멘텀 콘솔", callback_data=f"AVWAP:MENU:{t}")])
             
             if ver == "V_REV":
                 row2 = [
@@ -722,7 +722,7 @@ class TelegramView:
         return msg, InlineKeyboardMarkup(keyboard)
 
     def get_v14_mode_selection_menu(self, ticker):
-        msg = f"💎 <b>[{ticker} 무매4 오리지널 집행 방식 선택]</b>\n\n"
+        msg = f"💎 <b>[{ticker} 오리지널 집행 방식 선택]</b>\n\n"
         msg += "오리지널 무한매수법(V14)의 당일 예산 집행 방식을 선택해 주십시오.\n\n"
         msg += "<b>1. 📉 LOC 방식 (기본)</b>\n"
         msg += "▫️ 17:05 KST 정규장 주문 시 전량 장마감시지정가(LOC)로 일괄 전송\n"
@@ -875,12 +875,12 @@ class TelegramView:
         img.save(fname, format="PNG", quality=100)
         return fname
 
+    # MODIFIED: [V42.00] SOXS 단독 메뉴 소각 및 듀얼 모멘텀 집중
     def get_ticker_menu(self, current_tickers):
         keyboard = [
-            [InlineKeyboardButton("🔥 SOXL 전용 (상승장)", callback_data="TICKER:SOXL")],
-            [InlineKeyboardButton("❄️ SOXS 전용 (하락장)", callback_data="TICKER:SOXS")],
-            [InlineKeyboardButton("🚀 TQQQ 전용", callback_data="TICKER:TQQQ")],
-            [InlineKeyboardButton("💎 SOXL + SOXS 듀얼 모멘텀", callback_data="TICKER:SOXL,SOXS")],
-            [InlineKeyboardButton("💎 SOXL + TQQQ 통합", callback_data="TICKER:ALL")]
+            [InlineKeyboardButton("🚀 오리지널 TQQQ 단독 운용", callback_data="TICKER:TQQQ")],
+            [InlineKeyboardButton("🔥 오리지널 SOXL 단독 운용", callback_data="TICKER:SOXL")],
+            [InlineKeyboardButton("💎 오리지널 TQQQ + SOXL 듀얼 콤보", callback_data="TICKER:ALL")],
+            [InlineKeyboardButton("⚔️ SOXL (롱) + SOXS (숏) 듀얼 모멘텀", callback_data="TICKER:SOXL,SOXS")]
         ]
-        return f"🔄 <b>[ 운용 종목 선택 ]</b>\n현재: <b>{', '.join(current_tickers)}</b>", InlineKeyboardMarkup(keyboard)
+        return f"🔄 <b>[ 운용 종목 선택 ]</b>\n현재 가동중: <b>{', '.join(current_tickers)}</b>", InlineKeyboardMarkup(keyboard)

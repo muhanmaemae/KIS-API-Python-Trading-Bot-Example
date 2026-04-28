@@ -20,7 +20,7 @@
 # MODIFIED: [V30.09 핫픽스] 잔존 데드코드(pytz) 영구 소각 및 ZoneInfo 이식을 통한 타임존 무결성 락온 통일
 # 🚨 MODIFIED: [V32.00] 12차 백테스트 팩트 반영. 불필요해진 AVWAP 동적 파라미터(TARGET_SET, GAP_SET) 콜백 라우팅 전면 소각 완료.
 # NEW: [V40.XX 옴니 매트릭스] SOXL/SOXS 듀얼 모멘텀 티커 스위칭 완벽 분기 및 V-REV/AVWAP 권한 개방 완료
-# NEW: [V40.XX 옴니 매트릭스 절대 헌법] TQQQ(V14 전용) / SOXS(V-REV 전용) 백엔드 팻핑거 락다운 이식 완료
+# 🚨 MODIFIED: [V42.00 아키텍처 개편] SOXS 메인 종목 모드 전환 영구 락다운 및 듀얼 모멘텀 티커 라우팅 팩트 정립
 # ==========================================================
 import logging
 import datetime
@@ -587,12 +587,12 @@ class TelegramCallbacks:
             ticker = data[2]
             current_ver = self.cfg.get_version(ticker)
             
-            # 🚨 [V40.XX 절대 헌법] 팻핑거 백엔드 원천 차단
-            if new_ver == "V_REV" and ticker == "TQQQ":
-                await update.callback_query.answer("⚠️ [절대 헌법 위반] TQQQ는 V14 무매4 전용 아키텍처입니다. 전환이 차단되었습니다.", show_alert=True)
+            # 🚨 [V42.00 절대 헌법] 팻핑거 백엔드 원천 차단
+            if ticker == "TQQQ" and new_ver == "V_REV":
+                await query.answer("⚠️ [절대 헌법 위반] TQQQ는 V14 무매4 전용 아키텍처입니다. 전환이 차단되었습니다.", show_alert=True)
                 return
-            if new_ver == "V14" and ticker == "SOXS":
-                await update.callback_query.answer("⚠️ [절대 헌법 위반] SOXS는 V-REV 역추세 전용 아키텍처입니다. 전환이 차단되었습니다.", show_alert=True)
+            if ticker == "SOXS":
+                await query.answer("⚠️ [절대 헌법 위반] SOXS는 듀얼 모멘텀 타격용 티커로, 개별 모드 전환이 영구 차단되었습니다.", show_alert=True)
                 return
 
             async with self.tx_lock:
@@ -649,12 +649,12 @@ class TelegramCallbacks:
             
             target_ver = "V_REV" if mode_type in ["AUTO", "MANUAL"] else "V14"
 
-            # 🚨 [V40.XX 절대 헌법] 팻핑거 백엔드 원천 차단
-            if target_ver == "V_REV" and ticker == "TQQQ":
-                await update.callback_query.answer("⚠️ [절대 헌법 위반] TQQQ는 V14 무매4 전용 아키텍처입니다. 전환이 차단되었습니다.", show_alert=True)
+            # 🚨 [V42.00 절대 헌법] 팻핑거 백엔드 원천 차단
+            if ticker == "TQQQ" and target_ver == "V_REV":
+                await query.answer("⚠️ [절대 헌법 위반] TQQQ는 V14 무매4 전용 아키텍처입니다. 전환이 차단되었습니다.", show_alert=True)
                 return
-            if target_ver == "V14" and ticker == "SOXS":
-                await update.callback_query.answer("⚠️ [절대 헌법 위반] SOXS는 V-REV 역추세 전용 아키텍처입니다. 전환이 차단되었습니다.", show_alert=True)
+            if ticker == "SOXS":
+                await query.answer("⚠️ [절대 헌법 위반] SOXS는 듀얼 모멘텀 타격용 티커로, 개별 모드 전환이 영구 차단되었습니다.", show_alert=True)
                 return
 
             async with self.tx_lock:
@@ -801,6 +801,9 @@ class TelegramCallbacks:
                 target_tickers = sub.split(",")
                 msg_txt = " + ".join(target_tickers) + " 듀얼 모멘텀"
             else:
+                if sub == "SOXS":
+                    await query.answer("⚠️ [절대 헌법 위반] SOXS 단독 운용 모드는 영구 폐기되었습니다.", show_alert=True)
+                    return
                 target_tickers = [sub]
                 msg_txt = sub + " 전용"
                 
