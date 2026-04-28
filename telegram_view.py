@@ -12,6 +12,7 @@
 # 🚨 MODIFIED: [V42.06 핫픽스] SOXS 레이더 내 고가/저가 이식 및 자율지표(Autonomous Indicators) 로직 전면 폐기 완료.
 # 🚨 MODIFIED: [V42.07 핫픽스] 시작 메시지의 옴니 매트릭스 국면 판별 시간(10:20 EST)을 서머타임에 맞춰 KST(23:20/00:20)로 동적 변환 및 시계열 최하단으로 이동 렌더링 이식 완료.
 # 🚨 MODIFIED: [V42.08 핫픽스] 듀얼 모멘텀 암살자 기초자산(SOXX) 레이더 순서 변경 (실시간 ➔ 5분평균) 및 갭(%) 산출 렌더링 이식 완료.
+# 🚨 MODIFIED: [V42.09 핫픽스] 듀얼 모멘텀 타임쉴드 대기 메시지 시간(10:20 EST)을 서머타임 연동 한국시간(KST 23:20/00:20)으로 팩트 교정 완료.
 # ==========================================================
 import os
 import math
@@ -259,7 +260,7 @@ class TelegramView:
         page_items = history_data[start_idx:end_idx]
 
         msg = "🚀 <b>[ PIPIOS 퀀트 엔진 패치노트 ]</b>\n"
-        msg += "▫️ 현재 시스템: <code>V42.08 옴니 매트릭스 듀얼 코어</code>\n\n"
+        msg += "▫️ 현재 시스템: <code>V42.09 옴니 매트릭스 듀얼 코어</code>\n\n"
         
         for item in page_items:
             if isinstance(item, str):
@@ -516,7 +517,11 @@ class TelegramView:
 
         final_msg = header_msg + body_msg
         
-        # 🚨 [V42.08] 듀얼 모멘텀 레이더 순서 변경 및 갭(%) 산출 렌더링 이식
+        # [V42.09] 시스템 타임존 기반 방어막 시간 렌더링 락온
+        est_tz = ZoneInfo('America/New_York')
+        is_dst = bool(datetime.datetime.now(est_tz).dst())
+        shield_time = "23:20" if is_dst else "00:20"
+
         if avwap_tickers_data:
             ref_info = avwap_tickers_data.get('SOXL') or list(avwap_tickers_data.values())[0]
             base_tkr = ref_info.get('avwap_base_ticker', 'N/A')
@@ -548,7 +553,12 @@ class TelegramView:
                     t_info = avwap_tickers_data[t]
                     avwap_qty = t_info.get('avwap_qty', 0)
                     avwap_avg = t_info.get('avwap_avg', 0.0)
-                    avwap_status = t_info.get('avwap_status', '👀 장초반 10시 필터 대기')
+                    avwap_status = t_info.get('avwap_status', f'👀 장초반 10시 필터 대기')
+                    
+                    # 🚨 [V42.09] 방어막 시간 텍스트 KST 동적 치환
+                    if "10:20" in avwap_status:
+                        avwap_status = avwap_status.replace("10:20", shield_time)
+                        
                     avwap_strikes = t_info.get('avwap_strikes', 0)
                     
                     label = "롱" if t in ["SOXL", "TQQQ"] else "숏"
