@@ -12,6 +12,8 @@
 # 🚨 MODIFIED: [V43.06 다이어트 수술] 통합지시서(/sync) 내부의 비대한 AVWAP 스캔 엔진을 전면 적출하고 독립 플러그인으로 라우팅 이관 완료.
 # 🚨 MODIFIED: [V43.08 라우터 복원] 유실된 /avwap 명령어 핸들러를 완벽히 재등록하고 에러 캡처 방어막 이식.
 # 🚨 MODIFIED: [V43.13 상태 인터셉터 이식] AVWAP 수동 목표가 입력을 가로채어 팩트 업데이트 후 UI를 자동 갱신하는 쉴드 장착.
+# 🚨 MODIFIED: [V43.14 직관적 렌더링 연동] 수동 목표값 입력 완료 후, 봇 데몬 메모리에 '수동(MANUAL)' 상태를 확실하게 각인하여 원터치 스위칭의 무결성 확보.
+# 🚨 MODIFIED: [V43.16 코어 메모리 강제 동기화] 숫자 입력 시 변경된 MANUAL 상태가 증발(Amnesia)하지 않도록 백그라운드 Job Queue Data에 딥 인젝션(Deep Injection) 수술 완료.
 # ==========================================================
 import logging
 import datetime
@@ -147,7 +149,6 @@ class TelegramController:
         text = update.message.text
         chat_id = update.effective_chat.id
         
-        # 🚨 [V43.13] AVWAP 수동 목표가 입력 텍스트 인터셉트 방어막
         state = self.user_states.get(chat_id)
         if state and state.startswith("CONF_AVWAP_TARGET_"):
             ticker = state.split("_")[-1]
@@ -156,21 +157,26 @@ class TelegramController:
                 if hasattr(self.cfg, 'set_avwap_target_profit'):
                     self.cfg.set_avwap_target_profit(ticker, val)
                 self.user_states.pop(chat_id, None)
-                await update.message.reply_text(f"✅ <b>[{ticker}] 수동 목표 수익률이 {val}%로 락온되었습니다.</b>", parse_mode='HTML')
+                
+                # 🚨 [V43.16 코어 메모리 강제 동기화]
+                # 숫자를 입력하는 순간, 껍데기 메모리(bot_data)와 심장부 메모리(job.data)에 'MANUAL' 팩트를 양방향 인젝션!
+                if 'app_data' not in context.bot_data:
+                    context.bot_data['app_data'] = {}
+                context.bot_data['app_data'].setdefault('sniper_tracking', {})[f"AVWAP_TARGET_MODE_{ticker}"] = "MANUAL"
+                
+                render_app_data = context.bot_data['app_data']
+                if context.job_queue:
+                    for job in context.job_queue.jobs():
+                        if job.data is not None:
+                            job.data.setdefault('sniper_tracking', {})[f"AVWAP_TARGET_MODE_{ticker}"] = "MANUAL"
+                            render_app_data = job.data
+                
+                await update.message.reply_text(f"✅ <b>[{ticker}] 수동 목표 수익률이 {val}%로 설정되며 '🖐️수동 고정' 모드로 자동 전환되었습니다.</b>", parse_mode='HTML')
                 
                 try:
                     from telegram_avwap_console import AvwapConsolePlugin
                     plugin = AvwapConsolePlugin(self.cfg, self.broker, self.strategy, self.tx_lock)
-                    app_data = context.bot_data.get('app_data')
-                    if not app_data:
-                        try:
-                            jobs = context.job_queue.jobs() if context.job_queue else []
-                            if jobs and len(jobs) > 0 and jobs[0].data is not None:
-                                app_data = jobs[0].data
-                        except Exception: pass
-                    if not app_data: app_data = {}
-                    
-                    msg, markup = await plugin.get_console_message(app_data)
+                    msg, markup = await plugin.get_console_message(render_app_data)
                     await update.message.reply_text(msg, reply_markup=markup, parse_mode='HTML')
                 except Exception as e:
                     logging.error(f"AVWAP 콘솔 리프레시 에러: {e}")
@@ -363,7 +369,7 @@ class TelegramController:
             cash, holdings = await asyncio.to_thread(self.broker.get_account_balance)
             
         if holdings is None:
-            await update.message.reply_text("❌ KIS API 통신 오류로 계좌 정보를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.")
+            await update.message.reply_text("❌ KIS API 통신 오류로 계좌 정보를 불러올 수문을 수 없습니다. 잠시 후 다시 시도해주세요.")
             return
 
         target_hour, _ = self._get_dst_info() 
