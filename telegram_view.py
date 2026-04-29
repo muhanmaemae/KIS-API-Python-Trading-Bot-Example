@@ -14,6 +14,7 @@
 # NEW: [V43.04] 일일 체력(ATR14) 지시계 및 조기퇴근 가이던스 동적 렌더링 이식 완료.
 # 🚨 MODIFIED: [V43.05] 일일 체력 지시계를 14일(ATR14)에서 5일(ATR5) 평균 진폭으로 교체하여 단기 추세 반영력 극대화.
 # 🚨 MODIFIED: [V43.06 다이어트 수술] 통합지시서(/sync)의 과부하를 막기 위해 AVWAP 관련 렌더링 블록을 완전히 소각하고 독립 관제탑(/avwap)으로 역할을 100% 위임.
+# 🚨 MODIFIED: [V43.08 UX 동선 최적화] 통합지시서(/sync) 최하단에 /avwap 관제탑 호출 하이퍼링크 명령어 렌더링 추가.
 # ==========================================================
 import os
 import math
@@ -232,6 +233,35 @@ class TelegramView:
         ]
         return msg, InlineKeyboardMarkup(keyboard)
 
+    def get_avwap_console_menu(self, t):
+        is_multi_strike = False
+        target_pct = 4.0
+        
+        if self.cfg:
+            is_multi_strike = getattr(self.cfg, 'get_avwap_multi_strike_mode', lambda x: False)(t)
+            target_pct = getattr(self.cfg, 'get_avwap_target_profit', lambda x: 4.0)(t)
+            
+        mode_text = "무제한 다중 타격 (Multi-Strike) 락온" if is_multi_strike else "조기 퇴근 (One & Done) 락온"
+        mode_desc = "목표 수익 도달 시에도 <b>쿨다운 없이 즉각 다음 타점을 무제한 스캔</b>합니다." if is_multi_strike else "목표 수익 도달 시 <b>즉시 봇 전원을 차단하고 당일 매매를 영구 동결(퇴근)</b>합니다."
+        
+        msg = f"🔫 <b>[ {t} 차세대 AVWAP 듀얼 모멘텀 콘솔 ]</b>\n\n"
+        msg += f"💼 <b>현재 가동 모드: [ {mode_text} ]</b>\n"
+        msg += f"▫️ 당일 실시간 VWAP이 전일 VWAP과 5분 평균 VWAP을 동시에 돌파하는 <b>강력한 모멘텀</b>에서만 타격합니다.\n"
+        msg += f"▫️ {mode_desc}\n"
+        msg += f"▫️ <b>[오버나이트 방어]</b> 15:55 EST 타임스탑 강제 청산 시에 당일 매매가 동결됩니다.\n\n"
+        msg += f"🎯 <b>목표 익절가: 진입가 대비 +{target_pct:.1f}% (커스텀)</b>\n"
+        msg += f"🚨 <b>하드스탑 컷: 진입가 대비 -8.0% (고정/피격시 당일 동결)</b>\n"
+
+        toggle_label = "💼 조기퇴근 모드로 전환" if is_multi_strike else "🔁 다중출장 모드로 전환"
+        toggle_action = "EARLY" if is_multi_strike else "MULTI"
+        
+        keyboard = [
+            [InlineKeyboardButton(f"🎯 목표 수익률(%) 변경", callback_data=f"AVWAP_SET:TARGET:{t}")],
+            [InlineKeyboardButton(toggle_label, callback_data=f"AVWAP_SET:{toggle_action}:{t}")],
+            [InlineKeyboardButton("🔙 닫기 (설정 락온 완료)", callback_data=f"RESET:CANCEL")]
+        ]
+        return msg, InlineKeyboardMarkup(keyboard)
+
     def get_version_message(self, history_data, page_index=None):
         ITEMS_PER_PAGE = 5
         total_pages = max(1, (len(history_data) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
@@ -249,7 +279,7 @@ class TelegramView:
         page_items = history_data[start_idx:end_idx]
 
         msg = "🚀 <b>[ PIPIOS 퀀트 엔진 패치노트 ]</b>\n"
-        msg += "▫️ 현재 시스템: <code>V43.06 통합지시서 다이어트 및 독립 관제탑 신설</code>\n\n"
+        msg += "▫️ 현재 시스템: <code>V43.01 UX 팩트 교정</code>\n\n"
         
         for item in page_items:
             if isinstance(item, str):
@@ -310,7 +340,6 @@ class TelegramView:
             t = t_info['ticker']
             v_mode = t_info['version']
             
-            # 🚨 [V43.06 다이어트] SOXS는 오직 암살자(AVWAP) 전용이므로 통합지시서 본체에서는 완전히 렌더링 스킵
             if t == "SOXS":
                 continue 
             
@@ -510,14 +539,14 @@ class TelegramView:
         est_tz = ZoneInfo('America/New_York')
         is_dst = bool(datetime.datetime.now(est_tz).dst())
 
-        # 🚨 [V43.06 다이어트] 이 위치에 존재하던 100줄이 넘는 AVWAP 시각화 블록을 완전히 소각했습니다. 
-        # 이제 AVWAP 모멘텀 정보는 전적으로 /avwap 관제탑에서만 전담합니다.
-
         if not is_trade_active:
             fact_hour = 17 if is_dst else 18
             final_msg += f"💡 <i>※ 현재 표출된 계획은 전일 {fact_hour}:05 기준 박제된 스냅샷이며, 금일 {fact_hour}:05에 최신 팩트 잔고를 바탕으로 리셋됩니다.</i>\n\n"
             final_msg += "⛔ 장마감/애프터마켓: 주문 불가"
             
+        # 🚨 [V43.08 UX 팩트 교정] 통합지시서 하단에 /avwap 관제탑 호출 명령어 안내 추가
+        final_msg += "\n\n▶️ /avwap : 🔫 AVWAP 독립 관제탑 호출"
+
         return final_msg, InlineKeyboardMarkup(keyboard) if keyboard else None
 
     def get_settlement_message(self, active_tickers, config, atr_data, dynamic_target_data=None):
@@ -595,6 +624,9 @@ class TelegramView:
                     avwap_cb = f"MODE:AVWAP_OFF:{t}" 
                 
                 keyboard.append([InlineKeyboardButton(avwap_txt, callback_data=avwap_cb)])
+                
+                if is_avwap and t == "SOXL":
+                    keyboard.append([InlineKeyboardButton(f"🔫 {t} (롱) + SOXS (숏) 모멘텀 콘솔", callback_data=f"AVWAP:MENU:{t}")])
             
             if ver == "V_REV":
                 row2 = [
@@ -801,4 +833,3 @@ class TelegramView:
             [InlineKeyboardButton("💎 오리지널 TQQQ + SOXL 듀얼 콤보", callback_data="TICKER:ALL")]
         ]
         return f"🔄 <b>[ 운용 종목 선택 ]</b>\n현재 가동중: <b>{', '.join(current_tickers)}</b>", InlineKeyboardMarkup(keyboard)
-
