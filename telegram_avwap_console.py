@@ -1,5 +1,5 @@
 # ==========================================================
-# [telegram_avwap_console.py] - 🌟 V43.22 신규 AVWAP 독립 관제탑 플러그인 🌟
+# [telegram_avwap_console.py] - 🌟 V43.23 신규 AVWAP 독립 관제탑 플러그인 🌟
 # 🚨 NEW: 통합지시서(/sync)의 과부하를 막기 위해 AVWAP 듀얼 모멘텀 레이더를 분리 독립시킴.
 # 🚨 MODIFIED: [V43.07] 당일 저가(Day Low) 0점 앵커 기반 ATR5 체력 소진율 시각화 바(Bar) 이식.
 # 🚨 MODIFIED: [V43.08] 전일 VWAP 연산 중 발생하던 존재하지 않는 메서드 런타임 에러 팩트 수술 완료.
@@ -12,7 +12,8 @@
 # 🚨 MODIFIED: [V43.19 퍼센트(%) 팩트 통일] 목표 수익률(%)과 직관적이고 즉각적인 1:1 팩트 비교를 위해 스위칭.
 # 🚨 MODIFIED: [V43.20 ATR 다이어트] 후행성 노이즈를 유발하는 중기 체력(ATR14) 소각.
 # 🚨 MODIFIED: [V43.21 완전 자율주행 독립] AUTO 모드에서 사용자의 수동 입력값을 100% 배제.
-# 🚨 MODIFIED: [V43.22 잔여 체력 클램핑] 자율주행(AUTO) 익절 목표가가 물리적 한계치인 '잔여 체력(%)'을 초과할 수 없도록 강제 하드 클램핑(Hard Clamping)하는 물리 엔진 이식 완료.
+# 🚨 MODIFIED: [V43.22 잔여 체력 클램핑] 자율주행 익절 목표가가 '잔여 체력(%)'을 초과할 수 없도록 강제 하드 클램핑.
+# 🚨 MODIFIED: [V43.23 최저 수익률 절대 방어] 리스크-리워드 비율 확보를 위해, 잔여 체력이 아무리 부족하거나 고갈되어도 자율주행의 최소 목표수익률을 '무조건 2.0% 이상'으로 보장하는 마지노선 락온 완료.
 # ==========================================================
 import logging
 import datetime
@@ -200,7 +201,7 @@ class AvwapConsolePlugin:
                 msg += f"▫️ 잔여 체력: <b>{rem_5_str}</b>\n"
                 msg += f"   [0%] {make_bar(exh_5)} [+{atr5:.2f}%] <b>({exh_5:.0f}% 소진)</b>\n"
 
-            # 💡 [V43.22 잔여 체력 하드 클램핑 로직]
+            # 💡 [V43.23 잔여 체력 하드 클램핑 & 2.0% 절대 방어막 로직]
             if target_mode == "AUTO":
                 # 1. 1차 기본 기어 판별
                 if exh_5 >= 90: base_target = 2.0
@@ -214,11 +215,11 @@ class AvwapConsolePlugin:
                     rem_cap = math.floor(rem_5_pct * 10) / 10.0
                     dynamic_target = min(base_target, rem_cap)
                     
-                    # 마지노선 1.0% 보장
-                    dynamic_target = max(1.0, dynamic_target)
+                    # 💡 마지노선 2.0% 보장 (사용자 지시 팩트)
+                    dynamic_target = max(2.0, dynamic_target)
                 else:
-                    # 체력이 고갈되었거나 오버슈팅 중일 때는 긴급 도주 모드 1.0% 고정
-                    dynamic_target = 1.0
+                    # 체력이 고갈되었거나 오버슈팅 중일 때도 최소 2.0% 고정
+                    dynamic_target = 2.0
                 
                 target_display = f"🤖자율주행 (+{dynamic_target:.1f}%)"
                 btn_mode_text = f"🤖자율 (+{dynamic_target:.1f}%)"
