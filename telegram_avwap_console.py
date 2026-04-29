@@ -1,12 +1,12 @@
 # ==========================================================
-# [telegram_avwap_console.py] - 🌟 V43.10 신규 AVWAP 독립 관제탑 플러그인 🌟
+# [telegram_avwap_console.py] - 🌟 V43.11 신규 AVWAP 독립 관제탑 플러그인 🌟
 # 🚨 NEW: 통합지시서(/sync)의 과부하를 막기 위해 AVWAP 듀얼 모멘텀 레이더를 분리 독립시킴.
 # 🚨 MODIFIED: [V43.07] 당일 저가(Day Low) 0점 앵커 기반 ATR5/ATR14 체력 소진율 시각화 바(Bar) 이식.
 # 🚨 NEW: [V43.07] 체력 소진율(90%, 80%, 70%)에 따른 목표 수익률 자율주행(Auto) 엔진 및 스위치 장착.
 # 🚨 MODIFIED: [V43.08] 전일 VWAP 연산 중 발생하던 존재하지 않는 메서드 런타임 에러 팩트 수술 완료.
 # 🚨 MODIFIED: [V43.09 핫픽스] 모든 외부 API 통신에 asyncio.wait_for 족쇄(Timeout)를 강제 적용하여 봇 무반응(Deadlock) 현상 영구 소각 완료.
 # 🚨 MODIFIED: [V43.09 UI/UX 패치] 모바일 화면 줄바꿈 방지를 위한 게이지 바 다이어트, 모멘텀 판별식 명시 및 조건 미달 시 정보 은폐(Clean UI) 동적 렌더링 이식 완료.
-# 🚨 MODIFIED: [V43.10 UI 다이어트] 모바일 렌더링 최적화를 위해 AVWAP 콘솔 버튼을 기능별 가로(Horizontal) 그룹으로 병합하여 7줄 -> 4줄로 진공 압축.
+# 🚨 MODIFIED: [V43.11 극한 다이어트] 수동 모드 전환과 목표가 입력을 1개 버튼으로 통폐합하고, 1개 종목의 모든 제어 버튼을 가로 1줄에 진공 압축 완료.
 # ==========================================================
 import logging
 import datetime
@@ -99,11 +99,6 @@ class AvwapConsolePlugin:
                 msg += f"▫️ 5분 평균 VWAP: <b>${avg_vwap_5m:,.2f}</b>\n"
 
         keyboard = []
-        
-        # 💡 [V43.10 UI 다이어트] 버튼 가로 배열(Horizontal Grouping)을 위한 임시 리스트
-        target_btns = []
-        auto_manual_btns = []
-        strike_btns = []
 
         # ----------------------------------------------------
         # 🟢 UI 렌더링 파트 2: 종목별 팩트 스캔 및 다이내믹 클린 뷰포트
@@ -144,7 +139,6 @@ class AvwapConsolePlugin:
             momentum_met = False
             trend_str = "🔴 <b>조건 미달 (대기)</b>"
             
-            # 💡 [판별 기준 명시 및 신호등 로직]
             if t == "SOXS":
                 criteria = "당일VWAP &lt; 전일VWAP &amp; 5분평균 &lt; 당일VWAP"
                 if base_prev_vwap > 0 and base_curr_vwap > 0 and avg_vwap_5m > 0:
@@ -169,17 +163,16 @@ class AvwapConsolePlugin:
             msg += f"▫️ 판별 기준: <code>{criteria}</code>\n"
             msg += f"▫️ 모멘텀 상태: {trend_str}\n"
 
-            # 💡 [조건부 은폐(Clean UI) 로직]: 모멘텀 미달 & 물량 0주 & 셧다운 아닐 시 이하 정보 모두 은폐
             show_details = momentum_met or (avwap_qty > 0) or is_shutdown
 
             if not show_details:
                 msg += "💤 <i>(조건 미달로 세부 관측망을 숨기고 대기합니다)</i>\n"
             else:
-                strike_icon = "💼 무제한 출장" if is_multi else "🏠 조기퇴근(1회)"
+                strike_icon_txt = "💼 무제한 출장" if is_multi else "🏠 조기퇴근(1회)"
                 if strikes > 0:
-                    msg += f"▫️ 모드: <b>{strike_icon} ({strikes}회차 교전 완료)</b>\n"
+                    msg += f"▫️ 모드: <b>{strike_icon_txt} ({strikes}회차 교전 완료)</b>\n"
                 else:
-                    msg += f"▫️ 모드: <b>{strike_icon} 가동 중</b>\n"
+                    msg += f"▫️ 모드: <b>{strike_icon_txt} 가동 중</b>\n"
 
                 msg += f"▫️ 독립 물량/평단: {avwap_qty}주 / ${avwap_avg:.2f}\n"
 
@@ -196,7 +189,6 @@ class AvwapConsolePlugin:
                     exh_5 = ((ref_price - day_low) / atr5_price * 100) if atr5_price > 0 else 0
                     exh_14 = ((ref_price - day_low) / atr14_price * 100) if atr14_price > 0 else 0
                     
-                    # 💡 [모바일 최적화]: 줄바꿈(Wrapping)을 방지하기 위해 10칸 -> 5칸으로 압축
                     def make_bar(exh):
                         pos = min(5, max(0, int(exh / 20)))
                         return "━" * pos + "🎯" + "━" * (5 - pos)
@@ -229,23 +221,15 @@ class AvwapConsolePlugin:
                 elif avwap_qty > 0: status_txt = "🎯 딥매수 완료 (익절 감시중)"
                 msg += f"▫️ 상태: <b>{status_txt}</b>\n"
 
-            # 💡 [V43.10 UI 다이어트] 버튼 가로 배열을 위한 팩트 병합
-            target_btns.append(InlineKeyboardButton(f"🎯 {t} 목표(%)", callback_data=f"AVWAP_SET:TARGET:{t}"))
+            # 💡 [V43.11 극한 다이어트] 1개 종목의 제어 버튼 3개를 가로 1줄에 완벽하게 압축 배치
+            btn_auto = InlineKeyboardButton(f"{t} 🤖자율", callback_data=f"AVWAP_SET:TARGET_AUTO:{t}")
+            btn_manual = InlineKeyboardButton("🎯수동입력", callback_data=f"AVWAP_SET:TARGET_MANUAL:{t}")
             
-            toggle_target_label = "🤖자율주행" if target_mode == "MANUAL" else "🖐️수동고정"
-            toggle_target_action = "TARGET_AUTO" if target_mode == "MANUAL" else "TARGET_MANUAL"
-            auto_manual_btns.append(InlineKeyboardButton(f"{t} {toggle_target_label}", callback_data=f"AVWAP_SET:{toggle_target_action}:{t}"))
-            
-            strike_icon_btn = "💼조기퇴근" if is_multi else "🔁다중출장"
-            strike_action = "EARLY" if is_multi else "MULTI"
-            strike_btns.append(InlineKeyboardButton(f"{t} {strike_icon_btn}", callback_data=f"AVWAP_SET:{strike_action}:{t}"))
+            strike_icon_btn = "💼조기퇴근" if not is_multi else "🔁다중출장"
+            strike_action = "EARLY" if is_multi else "MULTI" # Toggle
+            btn_strike = InlineKeyboardButton(strike_icon_btn, callback_data=f"AVWAP_SET:{strike_action}:{t}")
 
-        # ----------------------------------------------------
-        # 🟢 UI 렌더링 파트 3: 다이어트된 키보드 최종 팩트 조합
-        # ----------------------------------------------------
-        if target_btns: keyboard.append(target_btns)
-        if auto_manual_btns: keyboard.append(auto_manual_btns)
-        if strike_btns: keyboard.append(strike_btns)
+            keyboard.append([btn_auto, btn_manual, btn_strike])
 
         keyboard.append([
             InlineKeyboardButton("🔄 관제탑 새로고침", callback_data="AVWAP_SET:REFRESH:NONE"),
