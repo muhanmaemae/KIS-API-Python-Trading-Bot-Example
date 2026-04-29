@@ -1,19 +1,14 @@
 # ==========================================================
-# [telegram_avwap_console.py] - 🌟 V43.23 신규 AVWAP 독립 관제탑 플러그인 🌟
+# [telegram_avwap_console.py] - 🌟 V43.25 신규 AVWAP 독립 관제탑 플러그인 🌟
 # 🚨 NEW: 통합지시서(/sync)의 과부하를 막기 위해 AVWAP 듀얼 모멘텀 레이더를 분리 독립시킴.
-# 🚨 MODIFIED: [V43.07] 당일 저가(Day Low) 0점 앵커 기반 ATR5 체력 소진율 시각화 바(Bar) 이식.
-# 🚨 MODIFIED: [V43.08] 전일 VWAP 연산 중 발생하던 존재하지 않는 메서드 런타임 에러 팩트 수술 완료.
-# 🚨 MODIFIED: [V43.09 핫픽스] 모든 외부 API 통신에 asyncio.wait_for 족쇄(Timeout)를 강제 적용.
-# 🚨 MODIFIED: [V43.11 극한 다이어트] 수동 모드 전환과 목표가 입력을 1개 버튼으로 통폐합.
-# 🚨 MODIFIED: [V43.12 텔레그램 멱등성 붕괴 방어] 메시지 하단에 초 단위 타임스탬프 팩트 주입.
-# 🚨 MODIFIED: [V43.14 직관적 버튼 렌더링] 버튼 텍스트가 현재 모드를 직관적으로 표출.
-# 🚨 MODIFIED: [V43.17 개발망 풀-오픈] 조건 미달 시 발동되던 UI 은폐 락온 전면 무력화 (항시 렌더링).
-# 🚨 MODIFIED: [V43.18 달러 팩트 갭(Gap) 시각화] 백분율의 맹점을 타파하고 달러 기반 UI 산출.
-# 🚨 MODIFIED: [V43.19 퍼센트(%) 팩트 통일] 목표 수익률(%)과 직관적이고 즉각적인 1:1 팩트 비교를 위해 스위칭.
-# 🚨 MODIFIED: [V43.20 ATR 다이어트] 후행성 노이즈를 유발하는 중기 체력(ATR14) 소각.
-# 🚨 MODIFIED: [V43.21 완전 자율주행 독립] AUTO 모드에서 사용자의 수동 입력값을 100% 배제.
-# 🚨 MODIFIED: [V43.22 잔여 체력 클램핑] 자율주행 익절 목표가가 '잔여 체력(%)'을 초과할 수 없도록 강제 하드 클램핑.
-# 🚨 MODIFIED: [V43.23 최저 수익률 절대 방어] 리스크-리워드 비율 확보를 위해, 잔여 체력이 아무리 부족하거나 고갈되어도 자율주행의 최소 목표수익률을 '무조건 2.0% 이상'으로 보장하는 마지노선 락온 완료.
+# 🚨 MODIFIED: [V43.18] 달러 팩트 갭(Gap) 시각화 및 잔여 체력 달러 연산.
+# 🚨 MODIFIED: [V43.19] 퍼센트(%) 팩트 통일 (실제 갭과 잔여 체력 백분율 환산).
+# 🚨 MODIFIED: [V43.20] ATR 다이어트 (ATR14 소각, ATR5 단일 지표 사용).
+# 🚨 MODIFIED: [V43.21] 완전 자율주행 독립 (사용자 수동값 배제).
+# 🚨 MODIFIED: [V43.22] 잔여 체력 하드 클램핑 (자율 목표가가 잔여 체력 초과 불가).
+# 🚨 MODIFIED: [V43.23] 최저 수익률 2.0% 절대 방어막 적용.
+# 🚨 MODIFIED: [V43.24] 타점 팩트 시각화 (격발 시 달러 익절가 노출).
+# 🚨 MODIFIED: [V43.25 2-Button 미니멀리즘] 각 종목의 버튼을 2개로 압축하고, 버튼명에 티커(SOXL/SOXS)를 명시하여 오조작을 원천 차단하는 궁극의 UX 설계 적용 완료.
 # ==========================================================
 import logging
 import datetime
@@ -201,49 +196,59 @@ class AvwapConsolePlugin:
                 msg += f"▫️ 잔여 체력: <b>{rem_5_str}</b>\n"
                 msg += f"   [0%] {make_bar(exh_5)} [+{atr5:.2f}%] <b>({exh_5:.0f}% 소진)</b>\n"
 
-            # 💡 [V43.23 잔여 체력 하드 클램핑 & 2.0% 절대 방어막 로직]
             if target_mode == "AUTO":
-                # 1. 1차 기본 기어 판별
                 if exh_5 >= 90: base_target = 2.0
                 elif exh_5 >= 80: base_target = 3.0
                 elif exh_5 >= 70: base_target = 4.0
                 else: base_target = 5.0
                 
-                # 2. 잔여 체력(rem_5_pct)을 절대 초과하지 않도록 락온
                 if rem_5_pct > 0:
-                    # 안전을 위해 소수점 첫째 자리에서 내림 (예: 3.86 -> 3.8)
                     rem_cap = math.floor(rem_5_pct * 10) / 10.0
                     dynamic_target = min(base_target, rem_cap)
-                    
-                    # 💡 마지노선 2.0% 보장 (사용자 지시 팩트)
                     dynamic_target = max(2.0, dynamic_target)
                 else:
-                    # 체력이 고갈되었거나 오버슈팅 중일 때도 최소 2.0% 고정
                     dynamic_target = 2.0
                 
-                target_display = f"🤖자율주행 (+{dynamic_target:.1f}%)"
-                btn_mode_text = f"🤖자율 (+{dynamic_target:.1f}%)"
+                applied_pct = dynamic_target
+                target_display = f"🤖자율주행 (+{applied_pct:.1f}%)"
+                
+                # 💡 [V43.25] 버튼 이름에 티커를 명시하여 식별력 극대화
+                btn_mode_text = f"{t} 🤖자율 (+{applied_pct:.1f}%)"
                 toggle_target_action = "TARGET_MANUAL"
             else:
-                target_display = f"🖐️수동고정 (+{user_target_pct:.1f}%)"
-                btn_mode_text = f"🖐️수동 (+{user_target_pct:.1f}%)"
+                applied_pct = user_target_pct
+                target_display = f"🖐️수동고정 (+{applied_pct:.1f}%)"
+                
+                # 💡 [V43.25] 버튼 이름에 티커를 명시하여 식별력 극대화
+                btn_mode_text = f"{t} 🖐️수동 (+{applied_pct:.1f}%)"
                 toggle_target_action = "TARGET_AUTO"
 
-            msg += f"▫️ 목표 익절: <b>{target_display}</b> | 하드스탑: <b>-8.0%</b>\n"
+            if avwap_qty > 0 and avwap_avg > 0:
+                locked_pct = tracking_cache.get(f"AVWAP_LOCKED_TARGET_PCT_{t}", applied_pct)
+                
+                target_price = avwap_avg * (1 + locked_pct / 100.0)
+                hardstop_price = avwap_avg * (1 - 8.0 / 100.0)
+                
+                if target_mode == "AUTO":
+                    target_display = f"🤖자율주행 (+{locked_pct:.1f}%)"
+                    
+                msg += f"▫️ 목표 익절: <b>${target_price:.2f}</b> ({target_display}) | 하드스탑: <b>${hardstop_price:.2f}</b> (-8.0%)\n"
+            else:
+                msg += f"▫️ 목표 익절: <b>{target_display}</b> | 하드스탑: <b>-8.0%</b>\n"
 
             status_txt = "👀 타점 대기"
             if is_shutdown: status_txt = "🛑 당일 영구동결 (SHUTDOWN)"
             elif avwap_qty > 0: status_txt = "🎯 딥매수 완료 (익절 감시중)"
             msg += f"▫️ 상태: <b>{status_txt}</b>\n"
 
+            # 💡 [V43.25] 타점수정 버튼을 소각하고, 토글 모드 버튼과 스트라이크 버튼 딱 2개만 렌더링
             btn_toggle_mode = InlineKeyboardButton(btn_mode_text, callback_data=f"AVWAP_SET:{toggle_target_action}:{t}")
-            btn_input_target = InlineKeyboardButton("✏️타점수정", callback_data=f"AVWAP_SET:TARGET:{t}")
             
-            strike_icon_btn = "💼조기퇴근" if not is_multi else "🔁다중출장"
+            strike_icon_btn = f"{t} 💼조기퇴근" if not is_multi else f"{t} 🔁다중출장"
             strike_action = "MULTI" if not is_multi else "EARLY"
             btn_strike = InlineKeyboardButton(strike_icon_btn, callback_data=f"AVWAP_SET:{strike_action}:{t}")
 
-            keyboard.append([btn_toggle_mode, btn_input_target, btn_strike])
+            keyboard.append([btn_toggle_mode, btn_strike])
 
         keyboard.append([
             InlineKeyboardButton("🔄 관제탑 새로고침", callback_data="AVWAP_SET:REFRESH:NONE"),
