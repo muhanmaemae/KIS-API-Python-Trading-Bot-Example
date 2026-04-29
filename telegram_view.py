@@ -12,6 +12,8 @@
 # NEW: [V43.02 핫픽스] 서머타임(DST) 변동에 따른 17:05 / 18:05 동적 렌더링 팩트 교정 완료.
 # NEW: [V43.03 수익금 원화(KRW) 병기 패치] 지시서 렌더링 시 실시간 환율을 반영하여 달러($)와 원화(₩) 수익금을 동시 표출하도록 뷰 엔진 교정.
 # NEW: [V43.04] 일일 체력(ATR14) 지시계 및 조기퇴근 가이던스 동적 렌더링 이식 완료.
+# 🚨 MODIFIED: [V43.05] 일일 체력 지시계를 14일(ATR14)에서 5일(ATR5) 평균 진폭으로 교체하여 단기 추세 반영력 극대화.
+# 🚨 MODIFIED: [V43.06 다이어트 수술] 통합지시서(/sync)의 과부하를 막기 위해 AVWAP 관련 렌더링 블록을 완전히 소각하고 독립 관제탑(/avwap)으로 역할을 100% 위임.
 # ==========================================================
 import os
 import math
@@ -89,7 +91,8 @@ class TelegramView:
         msg += "▶️ /seed : 💵 개별 시드머니 관리\n"
         msg += "▶️ /ticker : 🔄 운용 종목 선택\n"
         msg += "▶️ /mode : 🎯 상방 스나이퍼 ON/OFF\n"
-        msg += "▶️ /version : 🛠️ 버전 및 업데이트 내역\n\n"
+        msg += "▶️ /version : 🛠️ 버전 및 업데이트 내역\n"
+        msg += "▶️ /avwap : 🔫 AVWAP 독립 관제탑 호출\n\n"
         
         msg += "⚠️ /reset : 🔓 비상 해제 메뉴 (락/리버스)\n"
         msg += "┗ 🚨 수동 닻 올리기: 예산 부족으로 리버스 진입 후 외화RP매도 등 예수금을 추가 입금하셨다면, 이 메뉴에서 반드시 '리버스 강제 해제' 버튼을 눌러주세요!\n\n"
@@ -147,7 +150,6 @@ class TelegramView:
         total_invested = sum(item.get('qty', 0) * item.get('price', 0.0) for item in q_data)
         avg_p = total_invested / total_q if total_q > 0 else 0.0
         
-        # 🚨 [V43.01 팩트 교정] 용어를 '지층'으로 100% 통일
         msg += f"▫️ 총 보유 지층 : {len(q_data)} 개 지층\n"
         msg += f"▫️ 총 장전 수량 : {total_q} 주\n"
         msg += f"▫️ 지층 통합 평단가 : ${avg_p:.2f}\n\n"
@@ -159,12 +161,11 @@ class TelegramView:
         if not q_data:
             msg += "📭 지층 데이터가 없습니다.\n"
         else:
-            # 🚨 [V43.01 팩트 교정] 가장 최근 매수 지층이 1이 되도록 인덱스 역전
             for idx, item in enumerate(reversed(q_data)):
                 qty = item.get('qty', 0)
                 price = item.get('price', 0.0)
                 item_date = item.get('date')
-                layer_num = idx + 1 # 1부터 시작
+                layer_num = idx + 1 
                 
                 if item_date is None:
                     msg += f"⚠️ {layer_num:<3} [날짜 손상] {qty:>4}주 ${price:.2f}\n"
@@ -231,35 +232,6 @@ class TelegramView:
         ]
         return msg, InlineKeyboardMarkup(keyboard)
 
-    def get_avwap_console_menu(self, t):
-        is_multi_strike = False
-        target_pct = 4.0
-        
-        if self.cfg:
-            is_multi_strike = getattr(self.cfg, 'get_avwap_multi_strike_mode', lambda x: False)(t)
-            target_pct = getattr(self.cfg, 'get_avwap_target_profit', lambda x: 4.0)(t)
-            
-        mode_text = "무제한 다중 타격 (Multi-Strike) 락온" if is_multi_strike else "조기 퇴근 (One & Done) 락온"
-        mode_desc = "목표 수익 도달 시에도 <b>쿨다운 없이 즉각 다음 타점을 무제한 스캔</b>합니다." if is_multi_strike else "목표 수익 도달 시 <b>즉시 봇 전원을 차단하고 당일 매매를 영구 동결(퇴근)</b>합니다."
-        
-        msg = f"🔫 <b>[ {t} 차세대 AVWAP 듀얼 모멘텀 콘솔 ]</b>\n\n"
-        msg += f"💼 <b>현재 가동 모드: [ {mode_text} ]</b>\n"
-        msg += f"▫️ 당일 실시간 VWAP이 전일 VWAP과 5분 평균 VWAP을 동시에 돌파하는 <b>강력한 모멘텀</b>에서만 타격합니다.\n"
-        msg += f"▫️ {mode_desc}\n"
-        msg += f"▫️ <b>[오버나이트 방어]</b> 15:55 EST 타임스탑 강제 청산 시에 당일 매매가 동결됩니다.\n\n"
-        msg += f"🎯 <b>목표 익절가: 진입가 대비 +{target_pct:.1f}% (커스텀)</b>\n"
-        msg += f"🚨 <b>하드스탑 컷: 진입가 대비 -8.0% (고정/피격시 당일 동결)</b>\n"
-
-        toggle_label = "💼 조기퇴근 모드로 전환" if is_multi_strike else "🔁 다중출장 모드로 전환"
-        toggle_action = "EARLY" if is_multi_strike else "MULTI"
-        
-        keyboard = [
-            [InlineKeyboardButton(f"🎯 목표 수익률(%) 변경", callback_data=f"AVWAP_SET:TARGET:{t}")],
-            [InlineKeyboardButton(toggle_label, callback_data=f"AVWAP_SET:{toggle_action}:{t}")],
-            [InlineKeyboardButton("🔙 닫기 (설정 락온 완료)", callback_data=f"RESET:CANCEL")]
-        ]
-        return msg, InlineKeyboardMarkup(keyboard)
-
     def get_version_message(self, history_data, page_index=None):
         ITEMS_PER_PAGE = 5
         total_pages = max(1, (len(history_data) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
@@ -277,7 +249,7 @@ class TelegramView:
         page_items = history_data[start_idx:end_idx]
 
         msg = "🚀 <b>[ PIPIOS 퀀트 엔진 패치노트 ]</b>\n"
-        msg += "▫️ 현재 시스템: <code>V43.01 UX 팩트 교정</code>\n\n"
+        msg += "▫️ 현재 시스템: <code>V43.06 통합지시서 다이어트 및 독립 관제탑 신설</code>\n\n"
         
         for item in page_items:
             if isinstance(item, str):
@@ -315,7 +287,6 @@ class TelegramView:
         
         return msg, InlineKeyboardMarkup(keyboard)
 
-    # MODIFIED: [V43.03 수익금 원화(KRW) 병기 패치] 환율(exchange_rate) 파라미터 추가
     def create_sync_report(self, status_text, dst_text, cash, rp_amount, ticker_data, is_trade_active, p_trade_data=None, exchange_rate=None):
         total_locked = sum(t_info.get('escrow', 0.0) for t_info in ticker_data)
         
@@ -335,15 +306,11 @@ class TelegramView:
         body_msg = ""
         keyboard = []
 
-        avwap_tickers_data = {}
-        for t_info in ticker_data:
-            if t_info.get('avwap_active', False):
-                avwap_tickers_data[t_info['ticker']] = t_info
-
         for t_info in ticker_data:
             t = t_info['ticker']
             v_mode = t_info['version']
             
+            # 🚨 [V43.06 다이어트] SOXS는 오직 암살자(AVWAP) 전용이므로 통합지시서 본체에서는 완전히 렌더링 스킵
             if t == "SOXS":
                 continue 
             
@@ -542,113 +509,9 @@ class TelegramView:
         
         est_tz = ZoneInfo('America/New_York')
         is_dst = bool(datetime.datetime.now(est_tz).dst())
-        shield_time = "23:20" if is_dst else "00:20"
 
-        if avwap_tickers_data:
-            ref_info = avwap_tickers_data.get('SOXL') or list(avwap_tickers_data.values())[0]
-            base_tkr = ref_info.get('avwap_base_ticker', 'N/A')
-            base_vwap = ref_info.get('avwap_base_vwap', 0.0)
-            prev_vwap = ref_info.get('avwap_prev_vwap', 0.0)
-            avg_vwap_5m = ref_info.get('avwap_avg_vwap_5m', 0.0) 
-            
-            final_msg += f"⚔️ <b>[ 차세대 AVWAP 듀얼 모멘텀 암살자 ]</b>\n"
-            final_msg += f"▫️ 기초자산(Base): <b>{base_tkr}</b>\n"
-            
-            if prev_vwap > 0:
-                final_msg += f"▫️ 전일 VWAP: ${prev_vwap:,.2f}\n"
-                
-                rt_gap = ((base_vwap - prev_vwap) / prev_vwap) * 100
-                final_msg += f"▫️ 실시간 VWAP: ${base_vwap:,.2f} ({rt_gap:+.2f}%)\n"
-                
-                if avg_vwap_5m > 0 and base_vwap > 0:
-                    avg_5m_gap = ((avg_vwap_5m - base_vwap) / base_vwap) * 100
-                    final_msg += f"▫️ 5분 평균 VWAP: ${avg_vwap_5m:,.2f} ({avg_5m_gap:+.2f}%)\n"
-                elif avg_vwap_5m > 0:
-                    final_msg += f"▫️ 5분 평균 VWAP: ${avg_vwap_5m:,.2f}\n"
-            else:
-                final_msg += f"▫️ 실시간 VWAP: ${base_vwap:,.2f}\n"
-                if avg_vwap_5m > 0:
-                    final_msg += f"▫️ 5분 평균 VWAP: ${avg_vwap_5m:,.2f}\n"
-                
-            for t in ['SOXL', 'SOXS', 'TQQQ']:
-                if t in avwap_tickers_data:
-                    t_info = avwap_tickers_data[t]
-                    avwap_qty = t_info.get('avwap_qty', 0)
-                    avwap_avg = t_info.get('avwap_avg', 0.0)
-                    avwap_status = t_info.get('avwap_status', f'👀 장초반 10시 필터 대기')
-                    
-                    if "10:20" in avwap_status:
-                        avwap_status = avwap_status.replace("10:20", shield_time)
-                        
-                    avwap_strikes = t_info.get('avwap_strikes', 0)
-                    
-                    label = "롱" if t in ["SOXL", "TQQQ"] else "숏"
-                    final_msg += f"\n🎯 <b>[ {t} ({label}) ]</b>\n"
-                    
-                    is_multi_strike = getattr(self.cfg, 'get_avwap_multi_strike_mode', lambda x: False)(t) if self.cfg else False
-                    strike_icon = "💼 무제한 출장" if is_multi_strike else "🏠 조기퇴근(1회)"
-                    
-                    if avwap_strikes > 0:
-                        final_msg += f"💼 <b>{strike_icon} 모드: {avwap_strikes}회차 교전 완료</b>\n"
-                    else:
-                        final_msg += f"💼 <b>{strike_icon} 모드 가동 중</b>\n"
-                        
-                    if prev_vwap > 0:
-                        if t == "SOXS":
-                            momentum_color = "🟢" if base_vwap < prev_vwap and avg_vwap_5m < base_vwap else "🔴"
-                            trend_str = "하락 돌파 (진입허용)" if base_vwap < prev_vwap and avg_vwap_5m < base_vwap else "조건 미달 (대기)"
-                            final_msg += f"▫️ 모멘텀 돌파: {momentum_color} {trend_str}\n"
-                            final_msg += f" ↳ (당일 &lt; 전일 &amp; 5분평균 &lt; 당일)\n"
-                        else:
-                            momentum_color = "🟢" if base_vwap > prev_vwap and avg_vwap_5m > base_vwap else "🔴"
-                            trend_str = "상승 돌파 (진입허용)" if base_vwap > prev_vwap and avg_vwap_5m > base_vwap else "조건 미달 (대기)"
-                            final_msg += f"▫️ 모멘텀 돌파: {momentum_color} {trend_str}\n"
-                            final_msg += f" ↳ (당일 &gt; 전일 &amp; 5분평균 &gt; 당일)\n"
-                    
-                    if t == "SOXS":
-                        d_high = t_info.get('day_high', 0.0)
-                        d_low = t_info.get('day_low', 0.0)
-                        p_close = t_info.get('prev_close', 0.0)
-                        final_msg += f"▫️ 현재가: ${t_info.get('curr', 0.0):.2f}\n"
-                        if p_close > 0:
-                            h_pct = (d_high - p_close) / p_close * 100
-                            l_pct = (d_low - p_close) / p_close * 100
-                            final_msg += f"▫️ 금일 고가: ${d_high:.2f} ({h_pct:+.2f}%)\n"
-                            final_msg += f"▫️ 금일 저가: ${d_low:.2f} ({l_pct:+.2f}%)\n"
-                        
-                    final_msg += f"▫️ 독립 물량/평단: {avwap_qty}주 / ${avwap_avg:.2f}\n"
-
-                    # 🚨 NEW: [V43.04] 일일 체력(ATR14) 지시계 및 조기퇴근 가이던스 이식
-                    atr14 = t_info.get('atr14', 0.0)
-                    p_close = t_info.get('prev_close', 0.0)
-                    
-                    if atr14 > 0 and p_close > 0:
-                        if avwap_qty > 0 and avwap_avg > 0:
-                            ref_price = avwap_avg
-                            ref_label = f"매수평단(${avwap_avg:.2f})"
-                        else:
-                            ref_price = t_info.get('curr', 0.0)
-                            ref_label = f"현재가(${ref_price:.2f})"
-                            
-                        gap_pct = (ref_price - p_close) / p_close * 100
-                        exhaustion_pct = (abs(gap_pct) / atr14) * 100
-                        
-                        # 체력 게이지 바 시각화 (5칸 블록)
-                        blocks = int(min(5, math.floor(exhaustion_pct / 20)))
-                        gauge = "🟥" * blocks + "⬛" * (5 - blocks)
-                        
-                        warn_msg = ""
-                        if exhaustion_pct >= 85 and gap_pct > 0:
-                            warn_msg = "\n ⚠️ <i>[경고] 일일 상승 진폭 한계치 근접. 타겟 도달 확률이 낮아 목표 수익률 하향(1~2%)을 권장합니다.</i>"
-                        elif exhaustion_pct >= 85 and gap_pct < 0:
-                            warn_msg = "\n ⚠️ <i>[경고] 일일 하락 진폭 한계치 근접. 하방 지지력이 강해질 수 있습니다.</i>"
-                            
-                        final_msg += f"▫️ {ref_label} 위치: <b>{gap_pct:+.2f}%</b> (전일비)\n"
-                        final_msg += f"▫️ 14일 평균 진폭(ATR14): <b>{atr14:.2f}%</b>\n"
-                        final_msg += f"🔋 <b>당일 체력 소진율:</b> {gauge} <b>({exhaustion_pct:.0f}% 소진)</b>{warn_msg}\n"
-
-                    final_msg += f"▫️ 작전 상태: <b>{avwap_status}</b>\n"
-            final_msg += "\n"
+        # 🚨 [V43.06 다이어트] 이 위치에 존재하던 100줄이 넘는 AVWAP 시각화 블록을 완전히 소각했습니다. 
+        # 이제 AVWAP 모멘텀 정보는 전적으로 /avwap 관제탑에서만 전담합니다.
 
         if not is_trade_active:
             fact_hour = 17 if is_dst else 18
@@ -732,9 +595,6 @@ class TelegramView:
                     avwap_cb = f"MODE:AVWAP_OFF:{t}" 
                 
                 keyboard.append([InlineKeyboardButton(avwap_txt, callback_data=avwap_cb)])
-                
-                if is_avwap and t == "SOXL":
-                    keyboard.append([InlineKeyboardButton(f"🔫 {t} (롱) + SOXS (숏) 모멘텀 콘솔", callback_data=f"AVWAP:MENU:{t}")])
             
             if ver == "V_REV":
                 row2 = [

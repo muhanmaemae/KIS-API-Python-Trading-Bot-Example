@@ -24,6 +24,7 @@
 # 🚨 MODIFIED: [V42.01 갭 스위칭 자율주행] 수동 제어(ON/OFF/THRESH_SET) 콜백 라우터 영구 소각
 # 🚨 MODIFIED: [V42.02 핫픽스] 운용 종목 선택 메뉴(/ticker)에서 SOXS 듀얼 콤보 라우팅 원천 차단 (팻핑거 방어)
 # 🚨 MODIFIED: [V43.00 작전 통제실 복구] AVWAP 커스텀 목표수익률(Target) 및 근무모드(조기퇴근/출장) 변경 콜백(AVWAP_SET) 라우팅 신설 완료.
+# 🚨 MODIFIED: [V43.07] 체력 소진율 연동 익절 자율주행 모드(TARGET_AUTO/MANUAL) 및 리프레시 버튼 콜백 라우터 팩트 추가.
 # ==========================================================
 import logging
 import datetime
@@ -321,7 +322,7 @@ class TelegramCallbacks:
                 await query.edit_message_text(f"✅ <b>[{ticker}] 삼위일체 소각(Nuke) 및 초기화 완료!</b>\n▫️ 본장부, 백업장부, 큐(Queue), 에스크로의 찌꺼기 데이터가 100% 영구 삭제되었습니다.\n▫️ 다음 매수 진입 시 0주 새출발 디커플링 타점 모드로 완벽히 재시작합니다.", parse_mode='HTML')
             
             elif sub == "CANCEL":
-                await query.edit_message_text("❌ 안전 통제실 메뉴를 닫습니다.", parse_mode='HTML')
+                await query.edit_message_text("❌ 닫았습니다.", parse_mode='HTML')
 
         elif action == "REC":
             if sub == "VIEW": 
@@ -713,24 +714,72 @@ class TelegramCallbacks:
                     
                 await query.edit_message_text(f"✅ <b>[{ticker}]</b> 퀀트 엔진이 <b>V14 무매4</b> 모드로 전환되었습니다.\n▫️ <b>집행 방식:</b> {mode_txt}\n▫️ /sync 명령어에서 변경된 지시서를 확인하세요.", parse_mode='HTML')
 
-        # 🚨 [V43.00 복원] AVWAP 수익률 및 모드 스위칭 처리 라우터
+        # 🚨 [V43.07] 체력 소진율 연동 익절 자율주행 모드 스위칭 라우터 이식
         elif action == "AVWAP_SET":
             action_type = sub
             ticker = data[2]
             
             if action_type == "TARGET":
                 controller.user_states[chat_id] = f"CONF_AVWAP_TARGET_{ticker}"
-                await context.bot.send_message(chat_id, f"🎯 <b>[{ticker}] AVWAP 목표 수익률(%)</b>을 설정합니다.\n숫자만 입력하세요. (예: 2.0, 3.5, 4.0)\n※ -8.0% 하드스탑 컷은 안전을 위해 고정됩니다.", parse_mode='HTML')
+                await context.bot.send_message(chat_id, f"🎯 <b>[{ticker}] AVWAP 수동 목표 수익률(%)</b>을 설정합니다.\n숫자만 입력하세요. (예: 2.0, 3.5, 4.0)\n※ 설정 시 모드가 '🖐️수동 고정'으로 전환됩니다.", parse_mode='HTML')
+            elif action_type == "TARGET_AUTO":
+                app_data = context.bot_data.get('app_data', {})
+                tracking_cache = app_data.setdefault('sniper_tracking', {})
+                tracking_cache[f"AVWAP_TARGET_MODE_{ticker}"] = "AUTO"
+                
+                try:
+                    from telegram_avwap_console import AvwapConsolePlugin
+                    plugin = AvwapConsolePlugin(self.cfg, self.broker, self.strategy, self.tx_lock)
+                    msg, markup = await plugin.get_console_message(app_data)
+                    await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
+                    await query.answer("✅ 🤖 익절 타점 자율주행 모드로 전환되었습니다.", show_alert=False)
+                except Exception as e:
+                    logging.error(f"관제탑 새로고침 에러: {e}")
+                    await query.answer("모드 변경 완료. /avwap을 다시 호출해주세요.", show_alert=False)
+            elif action_type == "TARGET_MANUAL":
+                app_data = context.bot_data.get('app_data', {})
+                tracking_cache = app_data.setdefault('sniper_tracking', {})
+                tracking_cache[f"AVWAP_TARGET_MODE_{ticker}"] = "MANUAL"
+                
+                try:
+                    from telegram_avwap_console import AvwapConsolePlugin
+                    plugin = AvwapConsolePlugin(self.cfg, self.broker, self.strategy, self.tx_lock)
+                    msg, markup = await plugin.get_console_message(app_data)
+                    await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
+                    await query.answer("✅ 🖐️ 수동 타점 고정 모드로 전환되었습니다.", show_alert=False)
+                except Exception as e:
+                    logging.error(f"관제탑 새로고침 에러: {e}")
+                    await query.answer("모드 변경 완료. /avwap을 다시 호출해주세요.", show_alert=False)
             elif action_type == "EARLY":
                 self.cfg.set_avwap_multi_strike_mode(ticker, False)
-                msg, markup = self.view.get_avwap_console_menu(ticker)
-                await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
+                try:
+                    from telegram_avwap_console import AvwapConsolePlugin
+                    plugin = AvwapConsolePlugin(self.cfg, self.broker, self.strategy, self.tx_lock)
+                    app_data = context.bot_data.get('app_data', {})
+                    msg, markup = await plugin.get_console_message(app_data)
+                    await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
+                except Exception: pass
                 await query.answer("✅ 조기퇴근 모드(1회 익절)로 전환되었습니다.", show_alert=False)
             elif action_type == "MULTI":
                 self.cfg.set_avwap_multi_strike_mode(ticker, True)
-                msg, markup = self.view.get_avwap_console_menu(ticker)
-                await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
+                try:
+                    from telegram_avwap_console import AvwapConsolePlugin
+                    plugin = AvwapConsolePlugin(self.cfg, self.broker, self.strategy, self.tx_lock)
+                    app_data = context.bot_data.get('app_data', {})
+                    msg, markup = await plugin.get_console_message(app_data)
+                    await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
+                except Exception: pass
                 await query.answer("✅ 무제한 다중 출장 모드로 전환되었습니다.", show_alert=False)
+            elif action_type == "REFRESH":
+                try:
+                    from telegram_avwap_console import AvwapConsolePlugin
+                    plugin = AvwapConsolePlugin(self.cfg, self.broker, self.strategy, self.tx_lock)
+                    app_data = context.bot_data.get('app_data', {})
+                    msg, markup = await plugin.get_console_message(app_data)
+                    await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
+                    await query.answer("🔄 관제탑 스크린을 최신 팩트로 갱신했습니다.", show_alert=False)
+                except Exception as e:
+                    await query.answer(f"갱신 에러: {e}", show_alert=True)
 
         elif action == "AVWAP":
             if sub == "MENU":
@@ -740,8 +789,14 @@ class TelegramCallbacks:
                     await query.answer(f"⚠️ [{ticker}] AVWAP 하이브리드 모드가 꺼져있습니다. 먼저 활성화해주세요.", show_alert=True)
                     return
                     
-                msg, markup = self.view.get_avwap_console_menu(ticker)
-                await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
+                try:
+                    from telegram_avwap_console import AvwapConsolePlugin
+                    plugin = AvwapConsolePlugin(self.cfg, self.broker, self.strategy, self.tx_lock)
+                    app_data = context.bot_data.get('app_data', {})
+                    msg, markup = await plugin.get_console_message(app_data)
+                    await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
+                except Exception as e:
+                    await query.edit_message_text(f"❌ 관제탑 호출 에러: {e}", parse_mode='HTML')
 
         elif action == "MODE":
             mode_val = sub
@@ -755,7 +810,7 @@ class TelegramCallbacks:
                 if hasattr(self.cfg, 'set_avwap_hybrid_mode'):
                     self.cfg.set_avwap_hybrid_mode(ticker, True)
                 self.cfg.set_upward_sniper_mode(ticker, False) 
-                await query.edit_message_text(f"🔥 <b>[{ticker}] 차세대 12차 AVWAP 암살자 모드가 락온(Lock-on) 되었습니다!</b>\n▫️ 남은 가용 예산 100%를 활용하여 장중 딥매수 타점을 정밀 사냥합니다.", parse_mode='HTML')
+                await query.edit_message_text(f"🔥 <b>[{ticker}] 차세대 12차 AVWAP 암살자 모드가 락온(Lock-on) 되었습니다!</b>\n▫️ 남은 가용 예산 100%를 활용하여 장중 딥매수 타점을 정밀 사냥합니다.\n▫️ <code>/avwap</code> 명령어로 독립 관제탑에 접속하세요.", parse_mode='HTML')
                 return
             elif mode_val == "AVWAP_OFF":
                 if hasattr(self.cfg, 'set_avwap_hybrid_mode'):
@@ -776,7 +831,6 @@ class TelegramCallbacks:
                 target_tickers = ["SOXL", "TQQQ"]
                 msg_txt = "SOXL + TQQQ 통합"
             elif "," in sub:
-                # 🚨 [V42.02 핫픽스] 과거 듀얼 모멘텀 버튼(SOXL,SOXS) 클릭 시 차단
                 if "SOXS" in sub.split(","):
                     await query.answer("⚠️ [절대 헌법 위반] SOXS는 듀얼 모멘텀 암살자 전용이므로 메인 장부에 등록할 수 없습니다.", show_alert=True)
                     return

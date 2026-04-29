@@ -9,6 +9,7 @@
 # 🚨 MODIFIED: [V41.XX 파격적 수술] 0% 쿨다운, 갭 타격, 손절 셧다운 전면 폐기 & 무제한 VWAP 모멘텀 돌파 엔진 이식.
 # 🚨 MODIFIED: [V42.12 그랜드 핫픽스] 부등호 논리 완벽 원상 복구! (당일 > 5분평균 = 상승 롱 / 당일 < 5분평균 = 하락 숏)
 # 🚨 MODIFIED: [V43.00 작전 통제실 복구] 사용자가 설정한 커스텀 목표 수익률(Target) 수신 및 조기퇴근/다중출장 모드 연동 엔진 대수술 완료.
+# 🚨 MODIFIED: [V43.07] 체력 소진율(ATR5) 연동 목표 수익률 자율주행(Auto) 익절 렌더링 엔진 완벽 융합 완료.
 # ==========================================================
 import logging
 import datetime
@@ -26,7 +27,6 @@ class VAvwapHybridPlugin:
         self.leverage = 3.0             
         # 🚨 [팩트 락온] 백테스트 챔피언 파라미터 하드코딩 유지
         self.base_stop_loss_pct = 0.08 / 3.0  # 레버리지 3배 환산 시 -8.0% 하드스탑 고정
-        # self.base_target_pct = 0.04 # 🚨 [V43.00 삭제] 하드코딩 소각. 런타임에 동적으로 주입받음.
         
     def _get_logical_date_str(self, now_est):
         if now_est.hour < 4 or (now_est.hour == 4 and now_est.minute < 5):
@@ -47,7 +47,6 @@ class VAvwapHybridPlugin:
                     return json.load(f)
             except Exception:
                 pass
-        # NEW: [V41.XX] 0% 리셋 플래그 소각, shutdown 초기값 False 유지
         return {"executed_buy": False, "shutdown": False, "strikes": 0}
 
     def save_state(self, ticker, now_est, state_data):
@@ -109,7 +108,6 @@ class VAvwapHybridPlugin:
                         else:
                             prev_vwap = prev_close
 
-            # MODIFIED: [V41.XX] RVOL 스파이크 차단 팩트는 소각되었으나 기존 아키텍처 보존을 위해 연산은 유지
             df_30m = tkr.history(period="60d", interval="30m", timeout=5)
             avg_vol_20 = 0.0
 
@@ -151,10 +149,14 @@ class VAvwapHybridPlugin:
         avwap_avg_price = avwap_avg_price if avwap_avg_price > 0 else kwargs.get('avwap_avg_price', kwargs.get('avg_price', 0.0))
         avwap_alloc_cash = avwap_alloc_cash if avwap_alloc_cash > 0 else kwargs.get('alloc_cash', kwargs.get('avwap_alloc_cash', 0.0))
         
-        # 🚨 [V43.00 복구] kwargs로 전달받은 커스텀 파라미터 (없으면 기존 백테스트 챔피언 세팅인 4% / 출장모드 유지)
-        target_profit_pct = kwargs.get('target_profit', 4.0) / 100.0
+        user_target_pct = kwargs.get('target_profit', 4.0)
         is_multi_strike = kwargs.get('is_multi_strike', False)
         
+        target_mode = kwargs.get('target_mode', 'AUTO')
+        atr5 = kwargs.get('atr5', 0.0)
+        day_low = kwargs.get('day_low', 0.0)
+        prev_c = kwargs.get('prev_close', 0.0)
+
         if now_est is None:
             now_est = datetime.datetime.now(ZoneInfo('America/New_York'))
             
@@ -165,8 +167,6 @@ class VAvwapHybridPlugin:
         avwap_state = avwap_state or {}
         
         curr_time = now_est.time()
-        
-        # NEW: [V41.XX] 모멘텀 무제한 타격 스캔 윈도우 락온
         time_1020 = datetime.time(10, 20)
         time_1500 = datetime.time(15, 0)
         time_1555 = datetime.time(15, 55)
@@ -175,7 +175,6 @@ class VAvwapHybridPlugin:
         vwap_success = False 
         avg_vwap_5m = base_curr_p
         
-        # 🚨 [V40.XX 옴니 매트릭스] 인버스(Inverse) 종목 여부 판독
         is_inverse = exec_ticker.upper() in ["SOXS", "SQQQ", "SPXU"]
         
         if df_1min_base is not None and not df_1min_base.empty:
@@ -190,7 +189,6 @@ class VAvwapHybridPlugin:
                     base_vwap = df['vol_tp'].sum() / cum_vol
                     vwap_success = True
                 
-                # NEW: [V41.XX] 당일 실시간 5분 평균 VWAP 연산 파이프라인
                 if len(df) >= 5:
                     recent_5 = df.tail(5)
                     sum_vol_5 = recent_5['vol'].sum()
@@ -203,7 +201,6 @@ class VAvwapHybridPlugin:
             except Exception as e:
                 logging.error(f"🚨 [V_AVWAP] 기초자산 1분봉 VWAP/5MA 연산 실패: {e}")
 
-        # NEW: [V41.XX] 낡은 rolling_tp 및 gap_pct 렌더링을 5분 VWAP 평균(avg_vwap_5m)으로 완전 대체
         def _build_res(action, reason, qty=0, target_price=0.0):
             return {
                 'action': action,
@@ -231,29 +228,38 @@ class VAvwapHybridPlugin:
                 logging.error("🚨 [V_AVWAP] safe_avg <= 0: 가격 데이터 결측, 하드스탑 강제 집행")
                 return _build_res('SELL', 'CORRUPT_PRICE_HARD_STOP', qty=safe_qty, target_price=0.0)
                 
-            # 익절 및 손절 연산은 계좌 실제 수익률을 추적하므로 SOXL/SOXS 구분 없이 팩트 기반 공통 연산
             exec_return = (exec_curr_p - safe_avg) / safe_avg
             base_equivalent_return = exec_return / self.leverage
             
             if base_equivalent_return <= -self.base_stop_loss_pct:
-                # 🚨 [팩트 락온] -8.0% 하드스탑 피격 시 (무조건 셧다운 락온)
                 avwap_state["shutdown"] = True
                 self.save_state(exec_ticker, now_est, avwap_state)
                 reason = f'HARD_STOP_손절(-8.0%)_당일영구동결'
                 return _build_res('SELL', reason, qty=safe_qty, target_price=0.0)
             
-            if exec_return >= target_profit_pct: # 🚨 V43.00: 커스텀 타겟 적용
-                # 🚨 [V43.00] 조기 퇴근 모드일 경우 익절 성공 시 셧다운 락온
+            # 🚨 [V43.07] 체력 소진율 기반 자율주행 수익률 산출
+            final_target_pct = user_target_pct
+            
+            if target_mode == "AUTO" and atr5 > 0 and day_low > 0 and prev_c > 0:
+                atr5_price = prev_c * (atr5 / 100.0)
+                exh_5 = ((safe_avg - day_low) / atr5_price * 100) if atr5_price > 0 else 0
+                
+                if exh_5 >= 90: final_target_pct = 2.0
+                elif exh_5 >= 80: final_target_pct = 3.0
+                elif exh_5 >= 70: final_target_pct = 4.0
+            
+            final_target_ratio = final_target_pct / 100.0
+            
+            if exec_return >= final_target_ratio:
                 if not is_multi_strike:
                     avwap_state["shutdown"] = True
                     self.save_state(exec_ticker, now_est, avwap_state)
-                    reason = f'조기퇴근_익절(+{target_profit_pct*100:.1f}%)_당일영구동결'
+                    reason = f'조기퇴근_익절(+{final_target_pct:.1f}%)_당일영구동결'
                 else:
-                    reason = f'MULTI_STRIKE_TAKE(+{target_profit_pct*100:.1f}%)_즉각재진입가능'
+                    reason = f'MULTI_STRIKE_TAKE(+{final_target_pct:.1f}%)_즉각재진입가능'
                 return _build_res('SELL', reason, qty=safe_qty, target_price=0.0)
 
             if curr_time >= time_1555:
-                # NEW: [V41.XX] 15:55 타임스탑 강제 청산 시에만 익일 오버나이트 갭하락 방어를 위해 셧다운 락온
                 avwap_state["shutdown"] = True
                 self.save_state(exec_ticker, now_est, avwap_state)
                 return _build_res('SELL', 'TIME_STOP_오버나이트동결', qty=safe_qty, target_price=0.0)
@@ -267,7 +273,7 @@ class VAvwapHybridPlugin:
             return _build_res('WAIT', '매크로_데이터_수집대기')
 
         if avwap_state.get('shutdown', False):
-            return _build_res('WAIT', '작전완수_또는_강제청산으로_인한_당일영구동결') # 메시지 범용으로 수정
+            return _build_res('WAIT', '작전완수_또는_강제청산으로_인한_당일영구동결')
 
         if curr_time < time_1020:
             return _build_res('WAIT', '10:20_이전_타임쉴드_대기')
@@ -277,7 +283,6 @@ class VAvwapHybridPlugin:
 
         prev_vwap = context_data.get('prev_vwap', 0.0)
 
-        # 🚨 [V42.12 핫픽스] 부등호 완벽 원상 복구! (당일 > 5분평균 = 상승 롱 / 당일 < 5분평균 = 하락 숏)
         if not is_inverse:
             trigger_condition = (base_vwap > prev_vwap) and (base_vwap > avg_vwap_5m)
         else:
@@ -291,4 +296,3 @@ class VAvwapHybridPlugin:
             return _build_res('WAIT', '순수현금예산_부족_관망')
             
         return _build_res('WAIT', '타점_대기중')
-

@@ -8,6 +8,8 @@
 # 🚨 MODIFIED: [V42.00 아키텍처 개편] SOXS 메인 장부 폐기에 따른 지시서 듀얼 렌더링 강제 병합 파이프라인(디커플링) 대수술
 # 🚨 MODIFIED: [V42.15 핫픽스] AVWAP 매수 후 지시서 0주 표출(환각) 맹점 원천 차단. /sync 조회 시 디스크 상태 파일(JSON)을 강제 로드하여 메모리 디커플링 100% 영구 소각 완료.
 # NEW: [V43.04] 일일 체력(ATR) 소진율 팩트 스캔 및 뷰포트 인젝션 파이프라인 개통 완료.
+# 🚨 MODIFIED: [V43.05] 일일 체력 지시계 기준을 14일(ATR14)에서 5일(ATR5)로 교체하여 단기 민감도 극대화.
+# 🚨 MODIFIED: [V43.06 다이어트 수술] 통합지시서(/sync) 내부의 비대한 AVWAP 스캔 엔진을 전면 적출하고 독립 플러그인으로 라우팅 이관 완료.
 # ==========================================================
 import logging
 import datetime
@@ -128,7 +130,8 @@ class TelegramController:
         application.add_handler(CommandHandler("reset", self.cmd_reset))
         application.add_handler(CommandHandler("update", self.cmd_update))
         
-        application.add_handler(CommandHandler("avwap", self.cmd_avwap))
+        # 🚨 [V43.06 다이어트] 기존 cmd_avwap 함수 포인터를 신규 플러그인 로직으로 교체
+        application.add_handler(CommandHandler("avwap", self.cmd_avwap_v2))
         
         application.add_handler(CallbackQueryHandler(self.handle_callback))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
@@ -155,36 +158,29 @@ class TelegramController:
         elif "명예의 전당" in text or "졸업" in text:
             return await self.cmd_history(update, context)
         elif "암살자" in text or "조기" in text:
-            return await self.cmd_avwap(update, context)
+            return await self.cmd_avwap_v2(update, context)
             
         await self.states_handler.handle_message(update, context, self)
 
-    async def cmd_avwap(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 🚨 NEW: [V43.06] 신설된 독립 관제탑 플러그인 라우터
+    async def cmd_avwap_v2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_admin(update):
             return
             
-        active_tickers = self.cfg.get_active_tickers()
-        avwap_tickers = [t for t in active_tickers if t == "SOXL"]
-        
-        # MODIFIED: [V42.00] SOXL 암살자 메뉴 호출 시 SOXS 콘솔도 듀얼로 표출
-        if "SOXL" in avwap_tickers:
-            avwap_tickers.append("SOXS")
-        
-        if not avwap_tickers:
-            return await update.message.reply_text("⚠️ <b>[AVWAP 암살자 오프라인]</b>\n▫️ 현재 운용 종목 중 AVWAP 지원 종목(SOXL)이 없습니다.", parse_mode='HTML')
+        try:
+            from telegram_avwap_console import AvwapConsolePlugin
+            plugin = AvwapConsolePlugin(self.cfg, self.broker, self.strategy, self.tx_lock)
             
-        for t in avwap_tickers:
-            is_hybrid_on = self.cfg.get_avwap_hybrid_mode("SOXL") if t == "SOXS" else self.cfg.get_avwap_hybrid_mode(t)
-            
-            if not is_hybrid_on:
-                msg = f"⚠️ <b>[AVWAP 암살자 오프라인]</b>\n"
-                msg += f"▫️ 현재 {t}의 AVWAP 하이브리드 모드가 꺼져있습니다.\n"
-                msg += f"▫️ <code>/settlement</code> 메뉴에서 먼저 활성화해주세요."
-                await update.message.reply_text(msg, parse_mode='HTML')
-                continue
-
-            msg, markup = self.view.get_avwap_console_menu(t)
+            app_data = context.bot_data.get('app_data', {})
+            if not app_data:
+                jobs = context.job_queue.jobs() if context.job_queue else []
+                app_data = jobs[0].data if jobs and jobs[0].data is not None else {}
+                
+            msg, markup = await plugin.get_console_message(app_data)
             await update.message.reply_text(msg, reply_markup=markup, parse_mode='HTML')
+        except Exception as e:
+            logging.error(f"AVWAP 관제탑 호출 에러: {e}")
+            await update.message.reply_text(f"❌ <b>[시스템 오류]</b>\n독립 관제탑 호출 중 문제가 발생했습니다: {e}", parse_mode='HTML')
 
     async def cmd_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_admin(update):
@@ -314,6 +310,8 @@ class TelegramController:
         msg = self.view.get_start_message(target_hour, season_icon, latest_version) 
         await update.message.reply_text(msg, parse_mode='HTML')
 
+    # 🚨 [V43.06 다이어트 수술 완료]
+    # AVWAP 관련 150줄의 스캔 코드를 100% 적출하여 telegram_avwap_console.py 플러그인으로 분리 독립
     async def cmd_sync(self, update, context):
         if not self._is_admin(update):
             return
@@ -333,18 +331,13 @@ class TelegramController:
         
         tickers = self.cfg.get_active_tickers()
         
-        # MODIFIED: [V42.00] SOXL의 AVWAP이 ON 상태라면 은폐된 SOXS를 렌더링 리스트에 강제 병합 편입
         render_tickers = list(tickers)
-        if "SOXL" in render_tickers and self.cfg.get_avwap_hybrid_mode("SOXL"):
-            if "SOXS" not in render_tickers:
-                render_tickers.append("SOXS")
                 
         sorted_tickers, allocated_cash = self._calculate_budget_allocation(cash, render_tickers)
         
         ticker_data_list = []
         total_buy_needed = 0.0
 
-        # 🚨 [V42.15 핫픽스] 0주 디커플링 환각을 차단하기 위한 tracking_cache 무결성 로드 엔진
         app_data = context.bot_data.get('app_data', {})
         if not app_data:
             try:
@@ -372,18 +365,15 @@ class TelegramController:
                 is_sniper_active_time = True
 
         for t in sorted_tickers:
+            # 🚨 [V43.06] SOXS는 오직 AVWAP 숏(Short) 타격 전용이므로 메인 지시서 연산 루프에서 완전 배제 (바이패스)
+            if t == "SOXS":
+                continue
+
             h = holdings.get(t, {'qty':0, 'avg':0})
             curr = await asyncio.to_thread(self.broker.get_current_price, t, is_market_closed=(status_code == "CLOSE"))
             prev_close = await asyncio.to_thread(self.broker.get_previous_close, t)
             ma_5day = await asyncio.to_thread(self.broker.get_5day_ma, t)
             day_high, day_low = await asyncio.to_thread(self.broker.get_day_high_low, t)
-            
-            # 🚨 NEW: [V43.04] ATR 기반 일일 체력 지시계용 데이터 스캔
-            try:
-                atr5, atr14 = await asyncio.wait_for(asyncio.to_thread(self.broker.get_atr_data, t), timeout=3.0)
-            except Exception as e:
-                logging.debug(f"⚠️ [{t}] ATR 데이터 스캔 타임아웃/에러: {e}")
-                atr5, atr14 = 0.0, 0.0
             
             actual_avg = float(h['avg']) if h['avg'] else 0.0
             actual_qty = int(h['qty'])
@@ -433,253 +423,147 @@ class TelegramController:
                 real_val = 0.0
             vol_status = "ON" if real_val >= 20.0 else "OFF"
 
-            # SOXS 듀얼 모멘텀 스캔 팩트 유지
-            if t == "SOXS":
-                plan = {'process_status': '듀얼 모멘텀 스캔 중', 'orders': [], 'one_portion': 0.0, 't_val': 0.0, 'is_reverse': False}
-                is_zero_start_fact = (actual_qty == 0)
-                logic_qty = actual_qty
-                v_rev_q_lots = 0
-                v_rev_q_qty = 0
-                v_rev_guidance = " 🚫 <code>[SOXS 듀얼 모멘텀] 메인 장부 및 예방적 LOC 덫 장전 영구 면제</code>\n"
-                seed = 0.0
-                split = 40.0
-                t_val = 0.0
-                is_rev = False
-            else:
-                logic_qty = actual_qty
-                is_zero_start_fact = (actual_qty == 0)
-                if cached_snap:
-                    if "total_q" in cached_snap:
-                        logic_qty = cached_snap["total_q"]
-                    elif "initial_qty" in cached_snap:
-                        logic_qty = cached_snap["initial_qty"]
-                    is_zero_start_fact = cached_snap.get("is_zero_start", logic_qty == 0)
+            logic_qty = actual_qty
+            is_zero_start_fact = (actual_qty == 0)
+            if cached_snap:
+                if "total_q" in cached_snap:
+                    logic_qty = cached_snap["total_q"]
+                elif "initial_qty" in cached_snap:
+                    logic_qty = cached_snap["initial_qty"]
+                is_zero_start_fact = cached_snap.get("is_zero_start", logic_qty == 0)
 
-                try:
-                    jobs = context.job_queue.jobs() if context.job_queue else []
-                    job_data = jobs[0].data if jobs and jobs[0].data is not None else {}
-                    regime_data = job_data.get('regime_data')
-                except Exception:
-                    regime_data = None
+            try:
+                jobs = context.job_queue.jobs() if context.job_queue else []
+                job_data = jobs[0].data if jobs and jobs[0].data is not None else {}
+                regime_data = job_data.get('regime_data')
+            except Exception:
+                regime_data = None
 
-                plan = self.strategy.get_plan(
-                    t, curr, actual_avg, logic_qty, safe_prev_close, ma_5day=ma_5day,
-                    market_type="REG", available_cash=allocated_cash[t],
-                    is_simulation=True, regime_data=regime_data
-                )
-                
-                split = self.cfg.get_split_count(t)
-                seed = self.cfg.get_seed(t)
-                t_val = plan.get('t_val', 0.0)
-                is_rev = plan.get('is_reverse', False)
-                
-                v_rev_q_qty = 0
-                v_rev_q_lots = 0
-                v_rev_guidance = ""
+            plan = self.strategy.get_plan(
+                t, curr, actual_avg, logic_qty, safe_prev_close, ma_5day=ma_5day,
+                market_type="REG", available_cash=allocated_cash[t],
+                is_simulation=True, regime_data=regime_data
+            )
+            
+            split = self.cfg.get_split_count(t)
+            seed = self.cfg.get_seed(t)
+            t_val = plan.get('t_val', 0.0)
+            is_rev = plan.get('is_reverse', False)
+            
+            v_rev_q_qty = 0
+            v_rev_q_lots = 0
+            v_rev_guidance = ""
 
-                if ver == "V_REV":
-                    if not getattr(self, 'queue_ledger', None):
-                        from queue_ledger import QueueLedger
-                        self.queue_ledger = QueueLedger()
-                        
-                    q_list = self.queue_ledger.get_queue(t)
-                    v_rev_q_lots = len(q_list)
-                    v_rev_q_qty = sum(item.get('qty', 0) for item in q_list)
-       
-                    one_portion_cash = seed * 0.15
-                    plan['one_portion'] = one_portion_cash
-                    half_portion_cash = one_portion_cash * 0.5
+            if ver == "V_REV":
+                if not getattr(self, 'queue_ledger', None):
+                    from queue_ledger import QueueLedger
+                    self.queue_ledger = QueueLedger()
                     
-                    tag = "VWAP" if is_manual_vwap else "LOC"
-                    
-                    if cached_snap and "orders" in cached_snap and logic_qty > 0:
-                        sell_idx = 1
-                        for o in cached_snap["orders"]:
-                            if o.get('side') == 'SELL' and "잭팟" not in o.get('desc', ''):
-                                v_rev_guidance += f" 🔵 매도{sell_idx}(Pop{sell_idx}) ${o['price']:.2f} <b>{o['qty']}주</b> ({tag})\n"
-                                sell_idx += 1
-                                
-                        if not is_manual_vwap:
-                            if 'avg_price' in cached_snap:
-                                snap_avg = float(cached_snap['avg_price'])
-                            else:
-                                _snap_sells = [o for o in cached_snap["orders"] if o.get('side') == 'SELL' and "잭팟" not in o.get('desc', '')]
-                                if _snap_sells:
-                                    _snap_q = sum(o.get('qty', 0) for o in _snap_sells)
-                                    _snap_amt = 0.0
-                                    for _idx, o in enumerate(_snap_sells):
-                                        _p = float(o.get('price', 0.0))
-                                        _q = int(o.get('qty', 0))
-                                        if _idx == 0:
-                                            _snap_amt += _q * (_p / 1.006)
-                                        else:
-                                            _snap_amt += _q * (_p / 1.005)
+                q_list = self.queue_ledger.get_queue(t)
+                v_rev_q_lots = len(q_list)
+                v_rev_q_qty = sum(item.get('qty', 0) for item in q_list)
+    
+                one_portion_cash = seed * 0.15
+                plan['one_portion'] = one_portion_cash
+                half_portion_cash = one_portion_cash * 0.5
+                
+                tag = "VWAP" if is_manual_vwap else "LOC"
+                
+                if cached_snap and "orders" in cached_snap and logic_qty > 0:
+                    sell_idx = 1
+                    for o in cached_snap["orders"]:
+                        if o.get('side') == 'SELL' and "잭팟" not in o.get('desc', ''):
+                            v_rev_guidance += f" 🔵 매도{sell_idx}(Pop{sell_idx}) ${o['price']:.2f} <b>{o['qty']}주</b> ({tag})\n"
+                            sell_idx += 1
+                            
+                    if not is_manual_vwap:
+                        if 'avg_price' in cached_snap:
+                            snap_avg = float(cached_snap['avg_price'])
+                        else:
+                            _snap_sells = [o for o in cached_snap["orders"] if o.get('side') == 'SELL' and "잭팟" not in o.get('desc', '')]
+                            if _snap_sells:
+                                _snap_q = sum(o.get('qty', 0) for o in _snap_sells)
+                                _snap_amt = 0.0
+                                for _idx, o in enumerate(_snap_sells):
+                                    _p = float(o.get('price', 0.0))
+                                    _q = int(o.get('qty', 0))
+                                    if _idx == 0:
+                                        _snap_amt += _q * (_p / 1.006)
+                                    else:
+                                        _snap_amt += _q * (_p / 1.005)
                                     snap_avg = _snap_amt / _snap_q if _snap_q > 0 else actual_avg
-                                else:
-                                    snap_avg = actual_avg
-                                
-                            target_jackpot = round(snap_avg * 1.01, 2) if snap_avg > 0 else 0.0
-                            v_rev_guidance += f" 🎯 [전체 잭팟] ${target_jackpot:.2f} <b>{logic_qty}주</b> (옵션)\n"
-                    
-                    elif q_list and logic_qty > 0:
-                        l1_qty = q_list[-1].get('qty', 0)
-                        l1_price = q_list[-1].get('price', safe_prev_close)
-                        
-                        target_l1 = round(l1_price * 1.006, 2)
-                        v_rev_guidance += f" 🔵 매도1(Pop1) ${target_l1:.2f} <b>{l1_qty}주</b> ({tag})\n"
-                        
-                        upper_qty = sum(item.get('qty', 0) for item in q_list[:-1])
-                        if upper_qty > 0:
-                            upper_invested = sum(item.get('qty', 0) * item.get('price', 0.0) for item in q_list[:-1])
-                            upper_avg = upper_invested / upper_qty
+                            else:
+                                snap_avg = actual_avg
                             
-                            target_upper = round(upper_avg * 1.005, 2)
-                            v_rev_guidance += f" 🔵 매도2(Pop2) ${target_upper:.2f} <b>{upper_qty}주</b> ({tag})\n"
-                            
-                        if not is_manual_vwap:
-                            temp_qty = 0
-                            temp_inv = 0.0
-                            for item in q_list:
-                                item_q = int(float(item.get('qty', 0)))
-                                if item_q == 0: continue
-                                if temp_qty + item_q <= logic_qty:
-                                    temp_qty += item_q
-                                    temp_inv += item_q * float(item.get('price', 0.0))
-                                else:
-                                    rem = logic_qty - temp_qty
-                                    if rem > 0:
-                                        temp_qty += rem
-                                        temp_inv += rem * float(item.get('price', 0.0))
-                                    break
-                            pure_queue_avg = temp_inv / temp_qty if temp_qty > 0 else 0.0
-                            
-                            target_jackpot = round(pure_queue_avg * 1.01, 2) if pure_queue_avg > 0 else 0.0
-                            v_rev_guidance += f" 🎯 [전체 잭팟] ${target_jackpot:.2f} <b>{logic_qty}주</b> (옵션)\n"
-                    else:
-                        v_rev_guidance += " 🔵 매도: 대기 물량 없음 (관망)\n"
-                    
-                    if safe_prev_close > 0:
-                        b1_price = round(safe_prev_close / 0.935 if is_zero_start_fact else safe_prev_close * 0.995, 2)
-                        b2_price = round(safe_prev_close * 0.999 if is_zero_start_fact else safe_prev_close * 0.9725, 2)
-                        
-                        b1_qty = math.floor(half_portion_cash / b1_price) if b1_price > 0 else 0
-                        b2_qty = math.floor(half_portion_cash / b2_price) if b2_price > 0 else 0
-                        
-                        if b1_qty > 0:
-                            v_rev_guidance += f" 🔴 매수1(Buy1) ${b1_price:.2f} <b>{b1_qty}주</b> ({tag})\n"
-                        if b2_qty > 0:
-                            v_rev_guidance += f" 🔴 매수2(Buy2) ${b2_price:.2f} <b>{b2_qty}주</b> ({tag})\n"
-                            
-                        if is_zero_start_fact:
-                            v_rev_guidance += " 🚫 <code>[0주 새출발] 기준 평단가 부재로 줍줍 생략 (1층 확보에 예산 100% 집중)</code>\n"
-                        elif b2_qty > 0 and b2_price > 0:
-                            if not is_manual_vwap:
-                                grid_start = round(half_portion_cash / (b2_qty + 1), 2)
-                                grid_end = round(half_portion_cash / (b2_qty + 5), 2)
-                                if grid_start >= 0.01 and grid_start < b2_price:
-                                    grid_end = max(grid_end, 0.01)
-                                    v_rev_guidance += f" 🧹 줍줍(5개): ${grid_start:.2f} ~ ${grid_end:.2f} ({tag})\n"
-                    else:
-                        v_rev_guidance += " 🔴 매수 대기: 타점 연산 대기 중\n"
-
-                    if is_manual_vwap:
-                        v_rev_guidance += "\n🚨 <b>[ ⛔ 치명적 경고: 수동 VWAP 설정 ]</b> 🚨\n"
-                        v_rev_guidance += "한투 앱(V앱)에서 수동 주문을 거실 때, <b>절대로 '하루 종일'로 설정하지 마십시오!</b>\n"
-                        v_rev_guidance += "작동 시간은 반드시 \n<b>[장 마감 30분 전 ~ 장 마감]</b>\n으로만 세팅하셔야 창출됩니다.\n"
-                        v_rev_guidance += "장중 내내 작동하게 둘 경우 V-REV 코어 전략의 수익률이 심각하게 파괴됩니다.\n"
-
-            is_avwap_active = False
-            avwap_budget = 0.0
-            avwap_qty = 0
-            avwap_avg = 0.0
-            avwap_status_txt = ""
-            avwap_strikes = 0
-            avwap_base_ticker = 'N/A'
-            avwap_base_price = 0.0
-            avwap_base_vwap = 0.0
-            avwap_prev_vwap = 0.0
-            avwap_avg_vwap_5m = 0.0 
-
-            is_hybrid_on = False
-            if hasattr(self.cfg, 'get_avwap_hybrid_mode'):
-                is_hybrid_on = self.cfg.get_avwap_hybrid_mode(t)
-                if t == "SOXS" and self.cfg.get_avwap_hybrid_mode("SOXL"):
-                    is_hybrid_on = True
-
-            if is_hybrid_on:
-                is_avwap_active = True
+                        target_jackpot = round(snap_avg * 1.01, 2) if snap_avg > 0 else 0.0
+                        v_rev_guidance += f" 🎯 [전체 잭팟] ${target_jackpot:.2f} <b>{logic_qty}주</b> (옵션)\n"
                 
-                # 🚨 [V42.15 핫픽스] 0주 디커플링 환각 방어를 위한 디스크 상태 파일 강제 로드
-                if not tracking_cache.get(f"AVWAP_INIT_{t}"):
-                    try:
-                        if hasattr(self.strategy, 'v_avwap_plugin'):
-                            saved_state = self.strategy.v_avwap_plugin.load_state(t, now_est)
-                            if saved_state:
-                                tracking_cache[f"AVWAP_BOUGHT_{t}"] = saved_state.get('bought', False)
-                                tracking_cache[f"AVWAP_SHUTDOWN_{t}"] = saved_state.get('shutdown', False)
-                                tracking_cache[f"AVWAP_QTY_{t}"] = saved_state.get('qty', 0)
-                                tracking_cache[f"AVWAP_AVG_{t}"] = saved_state.get('avg_price', 0.0)
-                                tracking_cache[f"AVWAP_STRIKES_{t}"] = saved_state.get('strikes', 0)
-                            tracking_cache[f"AVWAP_INIT_{t}"] = True
-                    except Exception as e:
-                        logging.error(f"UI 렌더링 중 AVWAP 상태 강제 로드 실패: {e}")
-
-                avwap_qty = tracking_cache.get(f"AVWAP_QTY_{t}", 0)
-                avwap_avg = tracking_cache.get(f"AVWAP_AVG_{t}", 0.0)
-                avwap_budget = cash
-                avwap_strikes = tracking_cache.get(f"AVWAP_STRIKES_{t}", 0)
-                
-                if tracking_cache.get(f"AVWAP_SHUTDOWN_{t}"):
-                    avwap_status_txt = "🛑 당일 영구동결 (SHUTDOWN)"
-                elif tracking_cache.get(f"AVWAP_BOUGHT_{t}") or avwap_qty > 0:
-                    avwap_status_txt = "🎯 딥매수 완료 (익절/손절 감시중)"
+                elif q_list and logic_qty > 0:
+                    l1_qty = q_list[-1].get('qty', 0)
+                    l1_price = q_list[-1].get('price', safe_prev_close)
+                    
+                    target_l1 = round(l1_price * 1.006, 2)
+                    v_rev_guidance += f" 🔵 매도1(Pop1) ${target_l1:.2f} <b>{l1_qty}주</b> ({tag})\n"
+                    
+                    upper_qty = sum(item.get('qty', 0) for item in q_list[:-1])
+                    if upper_qty > 0:
+                        upper_invested = sum(item.get('qty', 0) * item.get('price', 0.0) for item in q_list[:-1])
+                        upper_avg = upper_invested / upper_qty
+                        
+                        target_upper = round(upper_avg * 1.005, 2)
+                        v_rev_guidance += f" 🔵 매도2(Pop2) ${target_upper:.2f} <b>{upper_qty}주</b> ({tag})\n"
+                        
+                    if not is_manual_vwap:
+                        temp_qty = 0
+                        temp_inv = 0.0
+                        for item in q_list:
+                            item_q = int(float(item.get('qty', 0)))
+                            if item_q == 0: continue
+                            if temp_qty + item_q <= logic_qty:
+                                temp_qty += item_q
+                                temp_inv += item_q * float(item.get('price', 0.0))
+                            else:
+                                rem = logic_qty - temp_qty
+                                if rem > 0:
+                                    temp_qty += rem
+                                    temp_inv += rem * float(item.get('price', 0.0))
+                                break
+                        pure_queue_avg = temp_inv / temp_qty if temp_qty > 0 else 0.0
+                        
+                        target_jackpot = round(pure_queue_avg * 1.01, 2) if pure_queue_avg > 0 else 0.0
+                        v_rev_guidance += f" 🎯 [전체 잭팟] ${target_jackpot:.2f} <b>{logic_qty}주</b> (옵션)\n"
                 else:
-                    avwap_status_txt = "👀 상승장 필터 스캔 및 모멘텀 타점 대기"
-
-                avwap_base_ticker = 'SOXX' if t in ['SOXL', 'SOXS'] else ('QQQ' if t == 'TQQQ' else t)
+                    v_rev_guidance += " 🔵 매도: 대기 물량 없음 (관망)\n"
                 
-                avwap_ctx = tracking_cache.get(f"AVWAP_CTX_{t}")
-                if not avwap_ctx:
-                    try:
-                        avwap_ctx = await asyncio.wait_for(asyncio.to_thread(self.strategy.v_avwap_plugin.fetch_macro_context, avwap_base_ticker), timeout=4.0)
-                        if avwap_ctx: tracking_cache[f"AVWAP_CTX_{t}"] = avwap_ctx
-                    except Exception: pass
-
-                if status_code in ["PRE", "REG"] and not tracking_cache.get(f"AVWAP_SHUTDOWN_{t}"):
-                    try:
-                        df_1min_base = await asyncio.wait_for(asyncio.to_thread(self.broker.get_1min_candles_df, avwap_base_ticker), timeout=3.0)
-                        base_curr_p = float(await asyncio.wait_for(asyncio.to_thread(self.broker.get_current_price, avwap_base_ticker), timeout=3.0) or 0.0)
-                        
-                        if hasattr(self.strategy, 'v_avwap_plugin'):
-                            avwap_state_dict = {"strikes": tracking_cache.get(f"AVWAP_STRIKES_{t}", 0)}
-                            
-                            decision = self.strategy.v_avwap_plugin.get_decision(
-                                base_ticker=avwap_base_ticker, exec_ticker=t,
-                                base_curr_p=base_curr_p, exec_curr_p=curr,
-                                df_1min_base=df_1min_base, avwap_qty=avwap_qty,
-                                now_est=now_est, avwap_state=avwap_state_dict,
-                                context_data=avwap_ctx
-                            )
-                            avwap_base_price = decision.get('base_curr_p', base_curr_p)
-                            avwap_base_vwap = decision.get('vwap', 0.0)
-                            avwap_prev_vwap = decision.get('prev_vwap', 0.0)
-                            avwap_avg_vwap_5m = decision.get('avg_vwap_5m', 0.0)
-                            
-                            if "대기" in avwap_status_txt:
-                                reason = decision.get('reason', '타점 계산중')
-                                avwap_status_txt = f"⏳ 대기 ({reason})"
-                    except Exception as e:
-                        logging.error(f"🚨 [{t}] AVWAP 실시간 레이더 스캔 타임아웃/에러: {e}")
-
-                if not tracking_cache.get(f"AVWAP_BOUGHT_{t}") and not tracking_cache.get(f"AVWAP_SHUTDOWN_{t}") and avwap_qty == 0:
-                    curr_time = now_est.time()
-                    time_1020 = datetime.time(10, 20)
-                    time_1500 = datetime.time(15, 0)
+                if safe_prev_close > 0:
+                    b1_price = round(safe_prev_close / 0.935 if is_zero_start_fact else safe_prev_close * 0.995, 2)
+                    b2_price = round(safe_prev_close * 0.999 if is_zero_start_fact else safe_prev_close * 0.9725, 2)
                     
-                    if curr_time < time_1020:
-                        avwap_status_txt = "⏳ 10:20 이전 타임쉴드 대기"
-                    elif curr_time >= time_1500:
-                        avwap_status_txt = "⛔ 15:00 이후 신규진입 차단"
+                    b1_qty = math.floor(half_portion_cash / b1_price) if b1_price > 0 else 0
+                    b2_qty = math.floor(half_portion_cash / b2_price) if b2_price > 0 else 0
+                    
+                    if b1_qty > 0:
+                        v_rev_guidance += f" 🔴 매수1(Buy1) ${b1_price:.2f} <b>{b1_qty}주</b> ({tag})\n"
+                    if b2_qty > 0:
+                        v_rev_guidance += f" 🔴 매수2(Buy2) ${b2_price:.2f} <b>{b2_qty}주</b> ({tag})\n"
+                        
+                    if is_zero_start_fact:
+                        v_rev_guidance += " 🚫 <code>[0주 새출발] 기준 평단가 부재로 줍줍 생략 (1층 확보에 예산 100% 집중)</code>\n"
+                    elif b2_qty > 0 and b2_price > 0:
+                        if not is_manual_vwap:
+                            grid_start = round(half_portion_cash / (b2_qty + 1), 2)
+                            grid_end = round(half_portion_cash / (b2_qty + 5), 2)
+                            if grid_start >= 0.01 and grid_start < b2_price:
+                                grid_end = max(grid_end, 0.01)
+                                v_rev_guidance += f" 🧹 줍줍(5개): ${grid_start:.2f} ~ ${grid_end:.2f} ({tag})\n"
+                else:
+                    v_rev_guidance += " 🔴 매수 대기: 타점 연산 대기 중\n"
+
+                if is_manual_vwap:
+                    v_rev_guidance += "\n🚨 <b>[ ⛔ 치명적 경고: 수동 VWAP 설정 ]</b> 🚨\n"
+                    v_rev_guidance += "한투 앱(V앱)에서 수동 주문을 거실 때, <b>절대로 '하루 종일'로 설정하지 마십시오!</b>\n"
+                    v_rev_guidance += "작동 시간은 반드시 \n<b>[장 마감 30분 전 ~ 장 마감]</b>\n으로만 세팅하셔야 창출됩니다.\n"
+                    v_rev_guidance += "장중 내내 작동하게 둘 경우 V-REV 코어 전략의 수익률이 심각하게 파괴됩니다.\n"
 
             ticker_data_list.append({
                 'ticker': t, 'version': ver, 't_val': t_val, 'split': split, 'curr': curr, 'avg': actual_avg, 'qty': actual_qty,
@@ -697,7 +581,6 @@ class TelegramController:
                 'day_high': day_high,
                 'day_low': day_low,
                 'prev_close': safe_prev_close,
-                'atr14': atr14,  # 🚨 NEW: [V43.04] 뷰 엔진으로 ATR 데이터 패스
                 'tracking_info': tracking_status,
                 'dynamic_obj': dynamic_pct_obj,
                 'is_sniper_active_time': is_sniper_active_time,
@@ -706,20 +589,6 @@ class TelegramController:
                 'v_rev_q_lots': v_rev_q_lots,
                 'v_rev_q_qty': v_rev_q_qty,
                 'v_rev_guidance': v_rev_guidance,
-                'avwap_active': is_avwap_active,
-                'avwap_budget': avwap_budget,
-                'avwap_qty': avwap_qty,
-                'avwap_avg': avwap_avg,
-                'avwap_status': avwap_status_txt,
-                'avwap_strikes': avwap_strikes,
-                'avwap_base_ticker': avwap_base_ticker if is_avwap_active else 'N/A',
-                'avwap_base_price': avwap_base_price if is_avwap_active else 0.0,
-                'avwap_base_vwap': avwap_base_vwap if is_avwap_active else 0.0,
-                'avwap_prev_vwap': avwap_prev_vwap if is_avwap_active else 0.0,
-                'avwap_avg_vwap_5m': avwap_avg_vwap_5m if is_avwap_active else 0.0,
-                'avwap_gap_thresh': getattr(self.cfg, 'get_avwap_gap_threshold', lambda x: -0.67)(t) if is_avwap_active else -0.67,
-                'vrev_gap_switch': getattr(self.cfg, 'get_vrev_gap_switching_mode', lambda x: False)(t),
-                'vrev_gap_thresh': getattr(self.cfg, 'get_vrev_gap_threshold', lambda x: -0.67)(t),
                 'is_manual_vwap': is_manual_vwap,
                 'is_zero_start': is_zero_start_fact
             })
@@ -729,19 +598,15 @@ class TelegramController:
         surplus = cash - total_buy_needed
         rp_amount = surplus * 0.95 if surplus > 0 else 0
         
-        # 🚨 NEW: [V43.03 수익금 원화(KRW) 병기 패치] 실시간 환율 스캔 엔진 탑재
         try:
             def get_exchange_rate():
                 df = yf.Ticker("KRW=X").history(period="1d", timeout=3)
                 return float(df['Close'].iloc[-1]) if not df.empty else 0.0
-            
-            # 비동기 블로킹 방어 (3초 타임아웃 락온)
             exchange_rate = await asyncio.wait_for(asyncio.to_thread(get_exchange_rate), timeout=3.0)
         except Exception as e:
-            logging.debug(f"⚠️ 야후 파이낸스 환율 스캔 타임아웃 (달러만 표출): {e}")
+            logging.debug(f"⚠️ 야후 파이낸스 환율 스캔 타임아웃: {e}")
             exchange_rate = 0.0
 
-        # MODIFIED: [V43.03] exchange_rate 파라미터 주입 개통
         final_msg, markup = self.view.create_sync_report(
             status_text, dst_txt, cash, rp_amount, ticker_data_list, 
             status_code in ["PRE", "REG"], p_trade_data={}, 
