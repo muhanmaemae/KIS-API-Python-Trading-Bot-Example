@@ -1,7 +1,8 @@
 # ==========================================================
-# [telegram_view.py] - 🌟 100% 통합 무결점 완성본 (V44.05) 🌟
+# [telegram_view.py] - 🌟 100% 통합 무결점 완성본 (V44.06) 🌟
 # 🚨 MODIFIED: [V43.27 데드코드 소각 및 달러 타점 팩트 동기화] AVWAP 콘솔 독립 분리에 따라 불필요해진 get_avwap_console_menu 데드코드를 완전히 소각하고, 통합지시서(/sync)의 V14 모드에서도 물량 보유 시 '달러($) 익절 목표가'를 팩트로 렌더링하도록 뷰포트 파격 업그레이드 완료.
 # NEW: [V44.05 가상 에스크로] V-REV 0주 새출발 및 예방적 방어선 구축 문구를 '가상격리' 및 '가상 매수'로 팩트 교정 완료.
+# MODIFIED: [V44.06 텍스트 다이어트] 화면에 표출되는 불필요한 '(가상격리)' 꼬리표 전면 소각 완료.
 # ==========================================================
 import os
 import math
@@ -237,7 +238,7 @@ class TelegramView:
         page_items = history_data[start_idx:end_idx]
 
         msg = "🚀 <b>[ PIPIOS 퀀트 엔진 패치노트 ]</b>\n"
-        msg += "▫️ 현재 시스템: <code>V44.05 가상 에스크로 락온</code>\n\n"
+        msg += "▫️ 현재 시스템: <code>V44.06 가상 에스크로 텍스트 락온</code>\n\n"
         
         for item in page_items:
             if isinstance(item, str):
@@ -444,8 +445,8 @@ class TelegramView:
                     raw_guidance = '\n'.join(filtered_lines)
 
                 raw_guidance = raw_guidance.rstrip('\n')
-                # NEW: [V44.05 가상 에스크로] LOC 물리 전송 취소에 따른 직관적 텍스트 팩트 교정
-                raw_guidance = raw_guidance.replace("(LOC)", "(가상격리)").replace("(VWAP)", "(가상격리)")
+                # MODIFIED: [V44.06 가상 에스크로] 화면 렌더링 텍스트 다이어트 (가상격리 꼬리표 전면 소각)
+                raw_guidance = raw_guidance.replace(" (LOC)", "").replace(" (VWAP)", "")
                 body_msg += raw_guidance + "\n\n"
 
             else:
@@ -538,7 +539,7 @@ class TelegramView:
                 msg += "              [상위층] 평단가+0.5% (디커플링)\n"
                 msg += f"▫️ 자동복리: {comp_rate}%\n"
                 msg += f"▫️ 증권사 수수료: <b>{fee_rate}%</b>\n"
-                
+            
                 msg += "▫️ 막판 갭 스위칭: <b>🤖 자율주행 (상승장 자동 가동)</b>\n"
                 
                 if hasattr(config, 'get_avwap_hybrid_mode') and config.get_avwap_hybrid_mode(t):
@@ -556,7 +557,7 @@ class TelegramView:
                 msg += f"▫️ 증권사 수수료: <b>{fee_rate}%</b>\n"
                 v14_mode_txt = "🕒 VWAP 1분 타임 슬라이싱 (자체엔진)" if is_manual_vwap else "📉 LOC 단일 타격 (초안정성)"
                 msg += f"▫️ 집행: <b>{v14_mode_txt}</b>\n\n"
-                
+        
             if t == "SOXL":
                 row1 = [
                     InlineKeyboardButton("💎 오리지널 V14 세팅", callback_data=f"SET_VER:V14:{t}"),
@@ -792,3 +793,4 @@ class TelegramView:
             [InlineKeyboardButton("💎 오리지널 TQQQ + SOXL 듀얼 콤보", callback_data="TICKER:ALL")]
         ]
         return f"🔄 <b>[ 운용 종목 선택 ]</b>\n현재 가동중: <b>{', '.join(current_tickers)}</b>", InlineKeyboardMarkup(keyboard)
+
