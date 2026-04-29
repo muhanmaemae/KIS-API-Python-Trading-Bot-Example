@@ -2,6 +2,7 @@
 # [main.py] - 🌟 100% 통합 무결점 완성본 (V42.16) 🌟
 # ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
 # MODIFIED: [V42.16 핫픽스] post_init 함수 내부 asyncio.lock() typo AI 환각 영구 소각 및 교정
+# MODIFIED: [V43.10 핫픽스] /avwap 관제탑 및 큐 관리 명령어 라우팅 누락 팩트 교정 완료
 # ==========================================================
 
 import os
@@ -123,7 +124,6 @@ async def scheduled_volatility_scan(context):
         print(f"📊 [자율주행 지표] {' | '.join(briefing_lines)} (상세 게이지: /mode)")
     print("=" * 60 + "\n")
 
-# MODIFIED: [V42.16] asyncio.lock() 오타 AI 환각 제거 및 명확한 인스턴스 생성 교정
 async def post_init(application: Application):
     tx_lock = asyncio.Lock()
     application.bot_data['app_data']['tx_lock'] = tx_lock
@@ -179,11 +179,13 @@ def main():
     app.bot_data['app_data'] = app_data
     app.bot_data['bot_controller'] = bot
     
+    # NEW: [V43.10 핫픽스] /avwap 관제탑 및 큐 관리 명령어 라우팅 배선 강제 주입
     for cmd, handler in [
         ("start", bot.cmd_start), ("record", bot.cmd_record), ("history", bot.cmd_history), 
         ("sync", bot.cmd_sync), ("settlement", bot.cmd_settlement), ("seed", bot.cmd_seed), 
         ("ticker", bot.cmd_ticker), ("mode", bot.cmd_mode), ("reset", bot.cmd_reset), 
-        ("version", bot.cmd_version), ("update", bot.cmd_update)
+        ("version", bot.cmd_version), ("update", bot.cmd_update),
+        ("avwap", bot.cmd_avwap), ("queue", bot.cmd_queue), ("add_q", bot.cmd_add_q), ("clear_q", bot.cmd_clear_q)
     ]:
         app.add_handler(CommandHandler(cmd, handler))
         
