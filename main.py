@@ -1,8 +1,9 @@
 # ==========================================================
-# [main.py] - 🌟 100% 통합 무결점 완성본 (V42.16) 🌟
+# [main.py] - 🌟 100% 통합 무결점 완성본 (V44.04) 🌟
 # ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
 # MODIFIED: [V42.16 핫픽스] post_init 함수 내부 asyncio.lock() typo AI 환각 영구 소각 및 교정
 # MODIFIED: [V43.10 핫픽스] /avwap 관제탑 및 큐 관리 명령어 라우팅 누락 팩트 교정 완료
+# NEW: [V44.04 핫픽스] yfinance 패키지 내부의 불필요한 스팸 로그(possibly delisted 등)가 로그를 오염시키는 현상 원천 차단(침묵 락온)
 # ==========================================================
 
 import os
@@ -76,6 +77,9 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
+# NEW: [V44.04 핫픽스] yfinance 패키지 내부의 불필요한 스팸 로그(possibly delisted 등)가 로그를 오염시키는 현상 원천 차단(침묵 락온)
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 async def scheduled_volatility_scan(context):
     app_data = context.job.data
@@ -179,7 +183,6 @@ def main():
     app.bot_data['app_data'] = app_data
     app.bot_data['bot_controller'] = bot
     
-    # NEW: [V43.10 핫픽스] /avwap 관제탑 및 큐 관리 명령어 라우팅 배선 강제 주입
     for cmd, handler in [
         ("start", bot.cmd_start), ("record", bot.cmd_record), ("history", bot.cmd_history), 
         ("sync", bot.cmd_sync), ("settlement", bot.cmd_settlement), ("seed", bot.cmd_seed), 
