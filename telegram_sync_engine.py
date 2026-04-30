@@ -1,4 +1,5 @@
 # MODIFIED: [V44.08 장부 오염 디커플링] KIS 실잔고 스캔 시 AVWAP 암살자가 확보한 물량을 사전에 차감(Decoupling)하여, 암살자 물량이 V-REV LIFO 큐에 '수동 매수'로 오판되어 강제 편입되는 치명적 장부 오염 엣지 케이스 원천 차단.
+# NEW: [V44.09 AVWAP 유령 매수 환각 원천 차단] V-REV 모드에서 0주 졸업 판별이 확정되었음에도 인메모리(tracking_cache)에 AVWAP 물량이 남아있을 경우, 이를 즉각 포맷하고 영속성 상태 파일(save_state)까지 100% 소각하여 허공에 익절 주문을 난사하는 런타임 환각 및 통신 과부하(Reject) 맹점 완벽 수술.
 # ==========================================================
 # FILE: telegram_sync_engine.py
 # ==========================================================
@@ -259,18 +260,48 @@ class TelegramSyncEngine:
                     sold_today_vrev = sum(int(float(ex.get('ft_ccld_qty') or '0')) for ex in target_execs if ex.get('sll_buy_dvsn_cd') == "01") if target_execs else 0
                     
                     # 🚨 NEW: [V44.08 장부 오염 디커플링] AVWAP 암살자 보유 수량 정밀 차감
-                    avwap_qty = 0
+                    avwap_qty_global = 0
+                    tracking_cache_global = None
                     try:
                         jobs = context.job_queue.jobs() if context.job_queue else []
                         job_data = jobs[0].data if jobs and jobs[0].data is not None else {}
-                        tracking_cache = job_data.get('sniper_tracking', {})
-                        avwap_qty = tracking_cache.get(f"AVWAP_QTY_{ticker}", 0)
+                        tracking_cache_global = job_data.get('sniper_tracking', {})
+                        avwap_qty_global = tracking_cache_global.get(f"AVWAP_QTY_{ticker}", 0)
+                        
+                        if avwap_qty_global == 0:
+                            strategy = job_data.get('strategy')
+                            if strategy and hasattr(strategy, 'v_avwap_plugin'):
+                                avwap_state = strategy.v_avwap_plugin.load_state(ticker, now_est)
+                                avwap_qty_global = int(avwap_state.get('qty', 0))
                     except Exception:
                         pass
                     
-                    adjusted_actual_qty = max(0, actual_qty - avwap_qty)
+                    adjusted_actual_qty = max(0, actual_qty - avwap_qty_global)
                     
                     if adjusted_actual_qty == 0 and (vrev_ledger_qty > 0 or sold_today_vrev > 0):
+                        # 🚨 NEW: [V44.09 AVWAP 유령 매수 환각 방어막 이식] 
+                        if actual_qty == 0 and avwap_qty_global > 0:
+                            logging.warning(f"🚨 [{ticker}] V-REV 0주 졸업 판별 확정! 그러나 AVWAP 유령 물량({avwap_qty_global}주) 감지. 즉각 100% 영구 소각(Format)합니다.")
+                            try:
+                                if tracking_cache_global is not None:
+                                    tracking_cache_global[f"AVWAP_QTY_{ticker}"] = 0
+                                    tracking_cache_global[f"AVWAP_AVG_{ticker}"] = 0.0
+                                    tracking_cache_global[f"AVWAP_BOUGHT_{ticker}"] = False
+                                    tracking_cache_global[f"AVWAP_SHUTDOWN_{ticker}"] = True
+                                
+                                strategy = job_data.get('strategy')
+                                if strategy and hasattr(strategy, 'v_avwap_plugin'):
+                                    state_data = {
+                                        'bought': False,
+                                        'shutdown': True,
+                                        'qty': 0,
+                                        'avg_price': 0.0,
+                                        'strikes': tracking_cache_global.get(f"AVWAP_STRIKES_{ticker}", 0) if tracking_cache_global is not None else 0
+                                    }
+                                    await asyncio.to_thread(strategy.v_avwap_plugin.save_state, ticker, now_est, state_data)
+                            except Exception as e:
+                                logging.error(f"🚨 [{ticker}] AVWAP 환각 소각 중 예외 발생: {e}")
+
                         if now_kst.hour < 10:
                             await context.bot.send_message(chat_id, "⏳ <b>증권사 확정 정산(10:00 KST) 대기 중입니다.</b> 가결제 오차 방지를 위해 졸업 카드 발급 및 장부 초기화가 보류됩니다.", parse_mode='HTML')
                             self._sync_escrow_cash(ticker)
@@ -590,6 +621,45 @@ class TelegramSyncEngine:
 
                 self._sync_escrow_cash(ticker)
                 return "SUCCESS"
+
+    async def _verify_and_update_queue(self, ticker, q_data, context, chat_id):
+        # 🚨 [치명적 경고 2 준수] 텔레그램 조작 시 직접 파일 I/O 접근으로 런타임 붕괴(EC-2) 차단.
+        # 이 메서드는 현재 사용되지 않으나 하위 호환성을 위해 유지하며, 로직을 안전한 파일 직접 쓰기로 변경.
+        q_file = "data/queue_ledger.json"
+        all_q = {}
+        try:
+            if os.path.exists(q_file):
+                with open(q_file, 'r', encoding='utf-8') as f:
+                    all_q = json.load(f)
+        except Exception:
+            pass
+            
+        all_q[ticker] = q_data
+        
+        try:
+            os.makedirs(os.path.dirname(q_file) or '.', exist_ok=True)
+            fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(q_file) or '.')
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(all_q, f, ensure_ascii=False, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, q_file)
+            
+            # 인메모리 큐 동기화
+            if hasattr(self.queue_ledger, 'data'):
+                self.queue_ledger.data = all_q
+            if hasattr(self.queue_ledger, 'queues'):
+                self.queue_ledger.queues = all_q
+                
+        except Exception as e:
+            logging.error(f"🚨 수동 지층 장부 저장 실패: {e}")
+            
+        # 다이렉트 조작 후 실잔고 기반 비파괴 보정(CALIB) 강제 트리거.
+        # process_auto_sync 내부에서 실잔고 일치 시 CALIB 바이패스하므로 이중 합산 버그는 발생하지 않음.
+        if ticker not in self.sync_locks:
+            self.sync_locks[ticker] = asyncio.Lock()
+        if not self.sync_locks[ticker].locked():
+            await self.process_auto_sync(ticker, chat_id, context, silent_ledger=False)
 
     async def _display_ledger(self, ticker, chat_id, context, query=None, message_obj=None, pre_fetched_holdings=None):
         recs = [r for r in self.cfg.get_ledger() if r['ticker'] == ticker]

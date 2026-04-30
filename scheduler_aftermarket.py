@@ -1,5 +1,6 @@
 # MODIFIED: [V44.08 평단가 팩트 디커플링] AVWAP 암살자 매수로 인해 한투 실잔고 평단가가 희석되는 맹점을 원천 차단.
 # V-REV 모드일 경우 KIS 실잔고 평단가를 전면 무시하고, 오직 V-REV 큐 장부의 진성 평단가를 역산하여 3% 로터리 덫 타점에 반영하도록 락온 완료.
+# NEW: [V44.09 AVWAP 물량 물귀신 덤핑 원천 차단 및 디커플링 팩트 수술] AVWAP 암살자가 장중 딥매수한 물량이 장 마감 직후 애프터마켓 덫에 묶여 동반 투매(물귀신)되는 치명적 맹점을 완벽 수술. V-REV 큐에 해당하는 수량만을 수학적으로 핀셋 차감하여 로터리 덫으로 전송하도록 물량 디커플링 락온 완료.
 # ==========================================================
 # FILE: scheduler_aftermarket.py
 # ==========================================================
@@ -60,10 +61,15 @@ async def scheduled_after_market_lottery(context):
         ord_psbl_qty = int(h_data.get('ord_psbl_qty', 0))
         actual_avg = float(h_data.get('avg') or 0.0)
 
-        # 🚨 NEW: [V44.08 평단가 팩트 디커플링] V-REV 큐 평단가 락온 (AVWAP 매수 물량 희석 차단)
+        # 🚨 NEW: [V44.09 AVWAP 물량 물귀신 덤핑 원천 차단 및 디커플링 팩트 수술]
         ver = cfg.get_version(t)
         target_avg = actual_avg
+        target_qty = ord_psbl_qty
+        avwap_qty = 0
+        vrev_qty = 0
+        
         if ver == "V_REV":
+            # 1) 평단가 팩트 디커플링
             queue_ledger = app_data.get('queue_ledger')
             if queue_ledger:
                 q_data = queue_ledger.get_queue(t)
@@ -72,6 +78,30 @@ async def scheduled_after_market_lottery(context):
                     vrev_inv = sum(int(float(item.get('qty', 0))) * float(item.get('price', 0.0)) for item in q_data)
                     target_avg = vrev_inv / vrev_qty
                     logging.info(f"🛡️ [{t}] 애프터마켓 덫 타점 디커플링: AVWAP 훼손 방어를 위해 V-REV 큐 진성 평단가(${target_avg:.4f})로 팩트 오버라이드 완료.")
+            
+            # 2) 물량 팩트 디커플링 (물귀신 덤핑 방어)
+            try:
+                jobs = context.job_queue.jobs() if context.job_queue else []
+                job_data = jobs[0].data if jobs and jobs[0].data is not None else {}
+                tracking_cache = job_data.get('sniper_tracking', {})
+                avwap_qty = tracking_cache.get(f"AVWAP_QTY_{t}", 0)
+                
+                if avwap_qty == 0:
+                    strategy = app_data.get('strategy')
+                    if strategy and hasattr(strategy, 'v_avwap_plugin'):
+                        avwap_state = strategy.v_avwap_plugin.load_state(t, now_est)
+                        avwap_qty = int(avwap_state.get('qty', 0))
+            except Exception as e:
+                logging.error(f"🚨 [{t}] AVWAP 상태 로드 에러 (물량 디커플링 우회): {e}")
+
+            if avwap_qty > 0:
+                target_qty = max(0, ord_psbl_qty - avwap_qty)
+                
+                # 안전장치: 혹시라도 큐 장부 수량보다 target_qty가 많다면 큐 수량으로 캡핑
+                if queue_ledger and vrev_qty > 0:
+                    target_qty = min(target_qty, vrev_qty)
+                    
+                logging.info(f"🛡️ [{t}] 애프터마켓 덫 물량 디커플링: AVWAP 암살자 잔여 물량({avwap_qty}주)을 제외한 {target_qty}주만 정밀 장전합니다.")
 
         # 0주 새출발 당일인지 판독 (당일 0주 매수분은 애프터마켓 덫에서 엑시트 허용)
         # 스냅샷 디커플링 유지
@@ -95,16 +125,18 @@ async def scheduled_after_market_lottery(context):
         except Exception as e:
             logging.error(f"🚨 [{t}] 애프터마켓 스냅샷 로드 에러: {e}")
 
-        if ord_psbl_qty > 0 and target_avg > 0:
+        if target_qty > 0 and target_avg > 0:
             target_price = math.ceil(target_avg * 1.03 * 100) / 100.0
             
             try:
                 # 🚨 AFTER_LIMIT (장후 지정가) 코드로 전송
-                res = await asyncio.to_thread(broker.send_order, t, "SELL", ord_psbl_qty, target_price, "AFTER_LIMIT")
+                res = await asyncio.to_thread(broker.send_order, t, "SELL", target_qty, target_price, "AFTER_LIMIT")
                 
                 if res.get('rt_cd') == '0':
                     msg = f"🌙 <b>[{t}] 애프터마켓 3% 로터리 덫(Lottery Trap) 장전 완료</b>\n"
-                    msg += f"▫️ 대상 물량: <b>{ord_psbl_qty}주</b>\n"
+                    msg += f"▫️ 대상 물량: <b>{target_qty}주</b>\n"
+                    if avwap_qty > 0:
+                        msg += f"▫️ (AVWAP 독립 물량 {avwap_qty}주는 차감 보존됨)\n"
                     msg += f"▫️ 기준 평단: <b>${target_avg:.2f}</b>\n"
                     msg += f"▫️ 타겟 가격: <b>${target_price:.2f}</b>\n"
                     if is_zero_start_fact:
@@ -117,6 +149,8 @@ async def scheduled_after_market_lottery(context):
             except Exception as e:
                 logging.error(f"🚨 [{t}] 애프터마켓 주문 전송 중 에러: {e}")
                 
-        elif int(h_data.get('qty', 0)) > 0 and ord_psbl_qty == 0:
-            # 주식은 있으나 락다운(주문가능수량 0) 상태인 엣지 케이스 보고
-            logging.warning(f"⚠️ [{t}] 잔고는 있으나 주문가능수량(ord_psbl_qty)이 0주입니다. 미체결 취소 딜레이로 인해 덫 장전을 스킵합니다.")
+        elif int(h_data.get('qty', 0)) > 0 and target_qty == 0:
+            if ord_psbl_qty > 0 and avwap_qty > 0 and ord_psbl_qty <= avwap_qty:
+                logging.info(f"🛡️ [{t}] 보유 물량 전량이 AVWAP 암살자 소유이므로 V-REV 애프터마켓 덫 장전을 바이패스합니다.")
+            else:
+                logging.warning(f"⚠️ [{t}] 잔고는 있으나 주문가능수량(ord_psbl_qty)이 0주입니다. 미체결 취소 딜레이로 인해 덫 장전을 스킵합니다.")
