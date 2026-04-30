@@ -1,5 +1,5 @@
 # ==========================================================
-# [main.py] - 🌟 100% 통합 무결점 완성본 (V44.07) 🌟
+# [main.py] - 🌟 100% 통합 무결점 완성본 (V44.09) 🌟
 # ⚠️ 이 주석 및 파일명 표기는 절대 지우지 마세요.
 # 💡 [V24.10] 텔레그램 API 통신 타임아웃(TimedOut) 방어 및 커넥션 풀 최적화 이식 완료
 # 💡 [V24.11 수술] VolatilityEngine 동적 연결 및 TelegramController 의존성 주입
@@ -10,6 +10,7 @@
 # 🚀 [V27.00 자가 업데이트 라우터 이식] 텔레그램 핸들러 루프에 'update' 명령어 공식 등록 완료
 # NEW: [V44.07 암살자 타임라인 전진 배치] 옴니 매트릭스 스캔 및 스나이퍼 격발 10:20 -> 10:00 EST 락온 수술 완료
 # MODIFIED: [V44.07 핫픽스] 폐기된 scheduler_trade 유령 임포트 배선을 영구 소각하고 4대 정예 코어로 완벽 분리 복원 완료.
+# NEW: [V44.09 콜드 스타트 방어막] 10시 정각 스케줄 증발(Late Wake-up) 맹점을 원천 차단하기 위해 10:00~10:30 KST 사이 봇 부팅 시 5초 뒤 강제 1회성 정산(run_once)을 격발하는 락온 이식 완료.
 # ==========================================================
 
 import os
@@ -216,6 +217,13 @@ def main():
     
     SYNC_FUNC = scheduled_auto_sync_summer if is_dst else scheduled_auto_sync_winter
     jq.run_daily(SYNC_FUNC, time=datetime.time(10, 0, 5, tzinfo=kst_zone), days=tuple(range(7)), chat_id=ADMIN_CHAT_ID, data=app_data)
+    
+    # NEW: [V44.09 콜드 스타트 방어막] 10:00 ~ 10:30 KST 사이 부팅 시 지각 기상 1회성 스케줄 강제 격발
+    now_kst = datetime.datetime.now(kst_zone)
+    if now_kst.hour == 10 and 0 <= now_kst.minute <= 30:
+        jq.run_once(SYNC_FUNC, 5.0, chat_id=ADMIN_CHAT_ID, data=app_data)
+        logging.info("🚀 [콜드 스타트 락온] 10시 정산 스케줄 누락(Late Wake-up) 방어를 위해 5초 뒤 1회성 스냅샷/졸업카드를 강제 격발합니다.")
+        print("🚀 [콜드 스타트 방어막 가동] 10시 확정 정산 누락을 방지하기 위해 5초 뒤 1회성 스케줄을 강제 격발합니다.")
     
     jq.run_daily(scheduled_force_reset, time=datetime.time(4, 0, tzinfo=est_zone), days=(0,1,2,3,4), chat_id=ADMIN_CHAT_ID, data=app_data)
     
