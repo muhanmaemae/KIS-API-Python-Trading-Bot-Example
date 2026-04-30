@@ -1,6 +1,5 @@
-# MODIFIED: [V44.08 가상 락다운 콜백 해체] 불필요해진 V-REV 수동 덫 장전 우회(Virtual Escrow) 로직을 전면 도려내고, 해당 콜백 접근 시 즉각 락다운(Alert) 팝업을 띄우도록 클린 라우팅 수술 완료.
 # ==========================================================
-# FILE: telegram_callbacks.py
+# FILE: telegram_callbacks.py (Part 1/2)
 # ==========================================================
 import logging
 import datetime
@@ -246,7 +245,9 @@ class TelegramCallbacks:
                 page_idx = int(data[2])
                 msg, markup = self.view.get_version_message(history_data, page_index=page_idx)
                 await query.edit_message_text(msg, reply_markup=markup, parse_mode='HTML')
-                
+# ==========================================================
+# FILE: telegram_callbacks.py (Part 2/2)
+# ==========================================================
         elif action == "RESET":
             await query.answer()
             if sub == "MENU":
@@ -389,12 +390,12 @@ class TelegramCallbacks:
                 except Exception as e:
                     logging.error(f"📸 👑 졸업 이미지 생성/발송 실패: {e}")
                     await query.edit_message_text("❌ 이미지 생성 중 오류가 발생했습니다.", parse_mode='HTML')
-            
+        
         elif action == "EXEC":
             t = sub
             ver = self.cfg.get_version(t)
 
-            # 🚨 MODIFIED: [V44.09 예방 덫 영구 소각] V-REV는 자전거래 의심 회피를 위해 예방 덫을 완전히 소각했으므로 해당 콜백 접근 시 락다운 팝업 출력
+            # MODIFIED: [V44.09 예방 덫 영구 소각] V-REV는 자전거래 의심 회피를 위해 예방 덫을 완전히 소각했으므로 해당 콜백 접근 시 락다운 팝업 출력
             if ver == "V_REV":
                 await query.answer("🛑 [예방 덫 전면 소각] V-REV 모드는 자전거래 의심을 회피하고 AVWAP 암살자 가동을 위해 예방 덫 수동 장전 기능을 영구 소각했습니다.", show_alert=True)
                 return
@@ -448,6 +449,12 @@ class TelegramCallbacks:
 
             plan = self.strategy.get_plan(t, curr_p, safe_avg, logic_qty_v14, prev_c, ma_5day=ma_5day, market_type="REG", available_cash=allocated_cash[t], is_simulation=True)
             
+            # NEW: [0주 새출발 디커플링] 0주 보유 상태일 경우 수동 덫(LOC) 장전 시 Buy1 타점을 prev_c * 1.15로 상향 락온하여 체결 원천 차단
+            if safe_qty == 0:
+                for o in plan.get('core_orders', []):
+                    if o['side'] == 'BUY' and 'Buy1' in o.get('desc', ''):
+                        o['price'] = round(prev_c * 1.15, 2)
+
             title = f"💎 <b>[{t}] 무매4 정규장 주문 수동 실행</b>\n"
             msg = title
             
@@ -712,7 +719,7 @@ class TelegramCallbacks:
                 ticker = data[2]
                 is_hybrid_on = getattr(self.cfg, 'get_avwap_hybrid_mode', lambda x: False)(ticker)
                 if not is_hybrid_on:
-                    await context.bot.send_message(chat_id, f"⚠️ [{ticker}] AVWAP 하이브리드 모드가 꺼져있습니다. 먼저 활성화해주세요.")
+                    await context.bot.send_message(chat_id, f"⚠️ [{ticker}] AVWAP 하이브리 모드가 꺼져있습니다. 먼저 활성화해주세요.")
                     return
                     
                 try:
