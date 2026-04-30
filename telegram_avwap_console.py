@@ -12,6 +12,7 @@
 # 🚨 MODIFIED: [V43.26] 당일 고가/저가/현재가 갭 렌더링 텍스트 다이어트 및 체력 소진율 렌더링 줄바꿈(Formatting) 수술.
 # 🚨 MODIFIED: [V43.27] 전일 종가(Previous Close) 0% 베이스라인 환원 수술. 렌더링되는 모든 등락률(%)을 증권사 앱(MTS/HTS)과 100% 팩트 동기화 완료.
 # 🚨 MODIFIED: [V43.28] 사용자 인지 혼선 방어. 전일 종가(0% 베이스라인) 팩트 렌더링 명시화 및 UI 포맷팅 다이어트 수술.
+# 🚨 MODIFIED: [V44.13 당일 저가 기반 팩트 교정] 체력 소진율(ATR5) 연산의 베이스라인을 전일 종가에서 '당일 저가(Day Low)'로 디커플링하여 실제 바닥 대비 상승 물리력을 100% 팩트 반영.
 # ==========================================================
 import logging
 import datetime
@@ -178,23 +179,24 @@ class AvwapConsolePlugin:
                 ref_price = avwap_avg if (avwap_qty > 0 and avwap_avg > 0) else curr_p
                 ref_label = "매수평단" if (avwap_qty > 0 and avwap_avg > 0) else "현재가"
                 
-                # MODIFIED: [V43.28] 사용자 인지 혼선 방어. 전일 종가 기반 등락률 통일 및 포맷팅 다이어트
+                # 시각적 렌더링용 등락률 (MTS와 동일하게 전일 종가 베이스라인 유지)
                 high_pct = ((day_high - prev_c) / prev_c) * 100 if prev_c > 0 else 0.0
                 low_pct = ((day_low - prev_c) / prev_c) * 100 if prev_c > 0 else 0.0
                 curr_pct = ((ref_price - prev_c) / prev_c) * 100 if prev_c > 0 else 0.0
                 
-                abs_gap_pct = abs(curr_pct)
+                # NEW: [V44.13 당일 저가 기반 팩트 교정] 체력 소진율 연산을 전일 종가에서 '당일 저가'로 디커플링
+                rebound_gap = ref_price - day_low if ref_price >= day_low else 0.0
+                actual_rebound_pct = (rebound_gap / prev_c) * 100 if prev_c > 0 else 0.0
                 
-                exh_5 = (abs_gap_pct / atr5 * 100) if atr5 > 0 else 0
-                rem_5_pct = atr5 - abs_gap_pct
+                exh_5 = (actual_rebound_pct / atr5 * 100) if atr5 > 0 else 0
+                rem_5_pct = atr5 - actual_rebound_pct
                 
-                rem_5_str = f"{rem_5_pct:+.2f}% 추가 변동 여력" if rem_5_pct >= 0 else "체력 완전 고갈 (오버슈팅)"
+                rem_5_str = f"+{rem_5_pct:.2f}% 추가 상승 여력" if rem_5_pct >= 0 else "체력 완전 고갈 (오버슈팅)"
 
                 def make_bar(exh):
                     pos = min(5, max(0, int(exh / 20)))
                     return "━" * pos + "🎯" + "━" * (5 - pos)
                 
-                # MODIFIED: [V43.28] 전일 종가(베이스라인) 명시적 렌더링 추가
                 msg += f"\n📊 <b>[ {t} 당일 체력 정밀 분석 ]</b>\n"
                 msg += f"▫️ 전일 종가: <b>${prev_c:.2f}</b> (베이스라인)\n"
                 msg += f"▫️ 당일 고가: <b>${day_high:.2f}</b> ({high_pct:+.2f}%)\n"
