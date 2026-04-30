@@ -1,5 +1,5 @@
 # ==========================================================
-# [strategy_reversion.py] - 🌟 V43.28 1회분 이중 집행 및 예산 누수 엣지 케이스 완결본 🌟
+# [strategy_reversion.py] - 🌟 V44.11 0주 새출발 15% 상한가 락온 🌟
 # ⚠️ V-REV 하이브리드 엔진 전용 수학적 타격 모듈
 # 💡 5년 백테스트 기반 VWAP 유동성 정밀 가중치(U_CURVE_WEIGHTS) 적용 완료
 # 💡 [V24.16 팩트 동기화] 0주 새출발 디커플링 타점 (Buy1: 0.999, Buy2: /0.935) 원본 유지
@@ -37,6 +37,7 @@
 # 🚨 MODIFIED: [V43.28 그랜드 수술] BUY 슬라이싱 누수(부족 매수) 방어. 조건 불만족 스킵 시 예산을 무조건 잔차 달러 버킷(Residual)에 이월시켜 100% 소진을 락온.
 # 🚨 MODIFIED: [V43.28 엣지 케이스 수술] SELL 이중 차감 조기 종료 방어. LIFO 큐(total_q) 자체가 실시간 팩트이므로 executed 차감을 영구 소각하여 멱등성 확보.
 # 🚨 MODIFIED: [V44.08 팩트 교정] V-REV 매수 예산 잔차 버킷 이월 시 발생하는 수량(Qty) 소수점 섞임 차원 붕괴 영구 방어 완료 (순수 달러($) 캐싱 보장)
+# 🚨 MODIFIED: [V44.11 팩트 교정] 0주 새출발 시 1층 예산 100% 강제 진입을 보장하기 위해 Buy1 상한선을 15% 할증(* 1.15)으로 상향 락온.
 # ==========================================================
 import math
 import os
@@ -245,7 +246,8 @@ class ReversionStrategy:
         if not is_snapshot_mode and time_str not in target_keys:
             if cached_plan:
                 if total_q == 0:
-                    p1_trigger_fact = round(prev_c / 0.935, 2)
+                    # MODIFIED: [V44.11 0주 새출발 15% 상한가 락온] 0주 진입 시 예산 100% 강제 진입을 위해 Buy1 타점을 15% 할증(1.15배)으로 상향 팩트 교정
+                    p1_trigger_fact = round(prev_c * 1.15, 2)
                     p2_trigger_fact = round(prev_c * 0.999, 2)
                     b1_budget = alloc_cash * 0.5
                     b2_budget = alloc_cash - b1_budget
@@ -293,7 +295,8 @@ class ReversionStrategy:
 
         if is_zero_start_session or total_q == 0:
             side = "BUY"
-            p1_trigger = round(prev_c / 0.935, 2)
+            # MODIFIED: [V44.11 0주 새출발 15% 상한가 락온] 0주 진입 시 예산 100% 강제 진입을 위해 Buy1 타점을 15% 할증(1.15배)으로 상향 팩트 교정
+            p1_trigger = round(prev_c * 1.15, 2)
             p2_trigger = round(prev_c * 0.999, 2)
         else:
             side = "SELL" if curr_p > prev_c else "BUY"
@@ -444,7 +447,6 @@ class ReversionStrategy:
                     self.residual["SELL_JACKPOT"][ticker] = float(exact_qs - alloc_qs)
                     if alloc_qs > 0:
                         orders.append({"side": "SELL", "qty": alloc_qs, "price": trigger_jackpot})
-                
                 else:
                     if l1_qty > 0 and curr_p >= trigger_l1:
                         # 1층 물량이 이미 매도된 상태를 고려하여 1층 잔여량 정밀 스캔
