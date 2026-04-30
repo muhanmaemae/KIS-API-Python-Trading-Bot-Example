@@ -1,6 +1,7 @@
-# MODIFIED: [V44.08 수동 덫 UI 영구 소각] V-REV 모드에 한하여 자전거래 의심을 차단하기 위해 [🚀 주문 실행] (수동 장전) 버튼 렌더링을 100% 영구 소각.
 # ==========================================================
-# FILE: telegram_view.py
+# [telegram_view.py]
+# MODIFIED: [V44.08 수동 덫 UI 영구 소각] V-REV 모드에 한하여 자전거래 의심을 차단하기 위해 [🚀 주문 실행] (수동 장전) 버튼 렌더링을 100% 영구 소각.
+# 🚨 MODIFIED: [V44.23 UI 런타임 붕괴 방어막 이식] 데이터 누락(KeyError: 'target')으로 인해 지시서 출력이 기절하는 현상을 원천 차단하기 위해, dict.get() 기반의 Safe-Casting 쉴드를 전면 이식하여 무결점 렌더링 보장.
 # ==========================================================
 import os
 import math
@@ -294,8 +295,8 @@ class TelegramView:
         keyboard = []
 
         for t_info in ticker_data:
-            t = t_info['ticker']
-            v_mode = t_info['version']
+            t = t_info.get('ticker', 'UNK')
+            v_mode = t_info.get('version', 'V14')
             
             if t == "SOXS":
                 continue 
@@ -303,12 +304,21 @@ class TelegramView:
             is_manual_vwap = t_info.get('is_manual_vwap', False)
             is_zero_start = t_info.get('is_zero_start', False)
             
+            safe_seed = t_info.get('seed', 0.0)
+            safe_one_portion = t_info.get('one_portion', 0.0)
+            safe_curr = t_info.get('curr', 0.0)
+            safe_avg = t_info.get('avg', 0.0)
             fact_qty = t_info.get('qty', 0)
+            safe_profit_amt = t_info.get('profit_amt', 0.0)
+            safe_profit_pct = t_info.get('profit_pct', 0.0)
+            safe_split = t_info.get('split', 40.0)
+            safe_t_val = t_info.get('t_val', 0.0)
+            
             if fact_qty == 0 and not is_zero_start:
                 is_zero_start = True
                 if 'plan' in t_info and 'orders' in t_info['plan']:
                     t_info['plan']['orders'] = []
-                    half_budget = (t_info.get('seed', 0.0) * 0.15) * 0.5
+                    half_budget = (safe_seed * 0.15) * 0.5
                     prev_c = t_info.get('prev_close', 0.0)
                     if prev_c > 0:
                         p1_trigger_fact = round(prev_c / 0.935, 2)
@@ -320,9 +330,9 @@ class TelegramView:
                         if q2 > 0:
                             t_info['plan']['orders'].append({"side": "BUY", "qty": q2, "price": p2_trigger_fact, "type": "LOC", "desc": "가상 매수(Buy2)"})
             
-            if t_info.get('t_val', 0.0) > (t_info.get('split', 40.0) * 1.1):
+            if safe_t_val > (safe_split * 1.1):
                 body_msg += "⚠️ <b>[🚨 시스템 긴급 경고: 비정상 T값 폭주 감지!]</b>\n"
-                body_msg += f"🔎 현재 T값(<b>{t_info['t_val']:.4f}T</b>)이 설정된 분할수(<b>{int(t_info['split'])}분할</b>) 초과했습니다!\n"
+                body_msg += f"🔎 현재 T값(<b>{safe_t_val:.4f}T</b>)이 설정된 분할수(<b>{int(safe_split)}분할</b>) 초과했습니다!\n"
                 body_msg += "💡 <b>원인 역산 추정:</b> 수동 매수로 수량이 급증했거나, '/seed' 시드머니 설정이 대폭 축소되었습니다.\n"
                 body_msg += "🛡️ <b>가동 조치:</b> 마이너스 호가 차단용 절대 하한선($0.01) 방어막 가동 중!\n\n"
 
@@ -342,20 +352,20 @@ class TelegramView:
                 body_msg += "❗ <i>에스크로 금고가 바닥나 강제 매도를 통해 현금을 생성합니다.</i>\n\n"
             
             if is_rev:
-                bdg_txt = f"리버스 잔금쿼터: ${t_info['one_portion']:,.0f}"
+                bdg_txt = f"리버스 잔금쿼터: ${safe_one_portion:,.0f}"
                 icon = "🩸" if proc_status == "🩸리버스(긴급수혈)" else "🔄"
                 body_msg += f"{icon} <b>[{t}] {v_mode_display} 리버스</b>\n"
-                body_msg += f"📈 진행: <b>{t_info['t_val']:.4f}T / {int(t_info['split'])}분할</b>\n"
+                body_msg += f"📈 진행: <b>{safe_t_val:.4f}T / {int(safe_split)}분할</b>\n"
             elif v_mode == "V_REV":
-                bdg_txt = f"1회(1배수) 예산: ${t_info['one_portion']:,.0f}"
+                bdg_txt = f"1회(1배수) 예산: ${safe_one_portion:,.0f}"
                 body_msg += f"{main_icon} <b>[{t}] {v_mode_display}</b>\n"
                 body_msg += f"📈 큐(Queue): <b>{t_info.get('v_rev_q_lots', 0)}개 지층 대기 중 (총 {t_info.get('v_rev_q_qty', 0)}주)</b>\n"
             else:
-                bdg_txt = f"당일 예산: ${t_info['one_portion']:,.0f}"
+                bdg_txt = f"당일 예산: ${safe_one_portion:,.0f}"
                 body_msg += f"{main_icon} <b>[{t}] {v_mode_display}</b>\n"
-                body_msg += f"📈 진행: <b>{t_info['t_val']:.4f}T / {int(t_info['split'])}분할</b>\n"
+                body_msg += f"📈 진행: <b>{safe_t_val:.4f}T / {int(safe_split)}분할</b>\n"
             
-            body_msg += f"💵 총 시드: ${t_info['seed']:,.0f}\n"
+            body_msg += f"💵 총 시드: ${safe_seed:,.0f}\n"
             body_msg += f"🛒 <b>{bdg_txt}</b>\n"
             
             escrow = t_info.get('escrow', 0.0)
@@ -364,7 +374,7 @@ class TelegramView:
             elif is_rev and proc_status == "🩸리버스(긴급수혈)":
                 body_msg += "🔐 내 금고 보호액: $0.00 (Empty 🚨)\n"
                 
-            body_msg += f"💰 현재 ${t_info['curr']:,.2f} / 평단 ${t_info['avg']:,.2f} ({t_info['qty']}주)\n"
+            body_msg += f"💰 현재 ${safe_curr:,.2f} / 평단 ${safe_avg:,.2f} ({fact_qty}주)\n"
             
             day_high = t_info.get('day_high', 0.0)
             day_low = t_info.get('day_low', 0.0)
@@ -378,14 +388,14 @@ class TelegramView:
                 body_msg += f"📈 금일 고가: ${day_high:.2f} ({high_sign}{high_pct:.2f}%)\n"
                 body_msg += f"📉 금일 저가: ${day_low:.2f} ({low_sign}{low_pct:.2f}%)\n"
 
-            sign = "+" if t_info['profit_amt'] >= 0 else "-"
-            icon = "🔺" if t_info['profit_amt'] >= 0 else "🔻"
+            sign = "+" if safe_profit_amt >= 0 else "-"
+            icon = "🔺" if safe_profit_amt >= 0 else "🔻"
             
             if exchange_rate and exchange_rate > 0:
-                krw_profit = abs(t_info['profit_amt']) * exchange_rate
-                body_msg += f"{icon} 수익: {sign}{abs(t_info['profit_pct']):.2f}% ({sign}${abs(t_info['profit_amt']):,.2f} | {sign}₩{int(krw_profit):,})\n\n"
+                krw_profit = abs(safe_profit_amt) * exchange_rate
+                body_msg += f"{icon} 수익: {sign}{abs(safe_profit_pct):.2f}% ({sign}${abs(safe_profit_amt):,.2f} | {sign}₩{int(krw_profit):,})\n\n"
             else:
-                body_msg += f"{icon} 수익: {sign}{abs(t_info['profit_pct']):.2f}% ({sign}${abs(t_info['profit_amt']):,.2f})\n\n"
+                body_msg += f"{icon} 수익: {sign}{abs(safe_profit_pct):.2f}% ({sign}${abs(safe_profit_amt):,.2f})\n\n"
             
             sniper_status_txt = t_info.get('upward_sniper', 'OFF')
             
@@ -393,15 +403,19 @@ class TelegramView:
                 sniper_status_txt = "OFF (0주 락온)"
             
             if v_mode != "V_REV":
+                safe_target = t_info.get('target', t_info.get('target_pct', 10.0))
+                safe_star_pct = t_info.get('star_pct', 0.0)
+                safe_star_price = t_info.get('star_price', 0.0)
+
                 if is_rev:
-                    body_msg += f"⚙️ 🌟 5일선 별지점: ${t_info['star_price']:.2f} | 🎯감시: {sniper_status_txt}\n"
+                    body_msg += f"⚙️ 🌟 5일선 별지점: ${safe_star_price:.2f} | 🎯감시: {sniper_status_txt}\n"
                 else:
-                    if fact_qty > 0 and t_info['avg'] > 0:
-                        target_price = t_info['avg'] * (1 + t_info['target'] / 100.0)
-                        body_msg += f"⚙️ 🎯 익절 목표가: <b>${target_price:.2f}</b> (+{t_info['target']}%)\n"
-                        body_msg += f"⚙️ ⭐ 별지점: {t_info['star_pct']}% | 🎯감시: {sniper_status_txt}\n"
+                    if fact_qty > 0 and safe_avg > 0:
+                        target_price = safe_avg * (1 + safe_target / 100.0)
+                        body_msg += f"⚙️ 🎯 익절 목표가: <b>${target_price:.2f}</b> (+{safe_target}%)\n"
+                        body_msg += f"⚙️ ⭐ 별지점: {safe_star_pct}% | 🎯감시: {sniper_status_txt}\n"
                     else:
-                        body_msg += f"⚙️ 🎯 목표: {t_info['target']}% | ⭐ 별지점: {t_info['star_pct']}% | 🎯감시: {sniper_status_txt}\n"
+                        body_msg += f"⚙️ 🎯 목표: {safe_target}% | ⭐ 별지점: {safe_star_pct}% | 🎯감시: {sniper_status_txt}\n"
                     
                 if sniper_status_txt == "ON":
                     if not is_trade_active:
@@ -412,10 +426,10 @@ class TelegramView:
                         body_msg += f"🎯 상방 추적(${trigger_price:.2f}) 중 (고가: ${peak_price:.2f})\n"
                     else:
                         if is_rev:
-                            sn_target = t_info['star_price']
+                            sn_target = safe_star_price
                         else:
-                            safe_floor = math.ceil(t_info['avg'] * 1.005 * 100) / 100.0
-                            sn_target = max(t_info['star_price'], safe_floor)
+                            safe_floor = math.ceil(safe_avg * 1.005 * 100) / 100.0
+                            sn_target = max(safe_star_price, safe_floor)
                         
                         if sn_target > 0:
                             body_msg += f"🎯 상방 스나이퍼: ${sn_target:.2f} 이상 대기\n"
