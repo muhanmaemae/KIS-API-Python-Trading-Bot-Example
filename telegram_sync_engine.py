@@ -1,18 +1,6 @@
+# MODIFIED: [V44.08 장부 오염 디커플링] KIS 실잔고 스캔 시 AVWAP 암살자가 확보한 물량을 사전에 차감(Decoupling)하여, 암살자 물량이 V-REV LIFO 큐에 '수동 매수'로 오판되어 강제 편입되는 치명적 장부 오염 엣지 케이스 원천 차단.
 # ==========================================================
-# [telegram_sync_engine.py] - 🌟 100% 통합 완성본 🌟 
-# MODIFIED: [V28.10 장부 환각 엣지 케이스 수술] 실잔고와 큐 장부 수량이 일치할 경우 비파괴 보정 원천 차단.
-# MODIFIED: [V28.21 동기화 엇박자 그랜드 수술] 졸업 판별 전 매도 원장 우선 기록으로 수익률 -100% 버그 차단.
-# MODIFIED: [V30.08 애프터마켓 기억상실 방어] 체결 원장 지연(Lag) 대기 및 8초 다중 교차 검증 엔진 이식. 
-# MODIFIED: [V30.12 유니버설 장부 동기화 & LIFO 큐 딥 캘리브레이션] 메인 장부 업데이트 개방 및 큐 다이렉트 편입.
-# MODIFIED: [V30.13 수동매수 익절 증발 방어] 0주 졸업 시 MANUAL_SYNC 지층의 원자적 파일 I/O 강제 락온.
-# NEW: [V30.15 제로섬 바이패스 & KST 자정 맹점 그랜드 수술] 
-# 1) 당일 매수 후 애프터마켓 전량 익절 시 실잔고 오차가 0(Zero-Sum)이 되어 메인 장부 기입이 
-# 증발하는 맹점 수술 (needs_reconstruction 엔진 이식).
-# 2) KST 자정을 넘긴 애프터마켓 매도 원장이 단일 날짜 조회 시 누락되는 '데이터 기아' 방어. 
-# 과거 4일치 광역 스캔 후 ord_dt/ord_tmd를 EST 타임존으로 정밀 형변환하여 당일 체결분만 핀셋 필터링(filter_to_est).
-# 3) 큐 장부가 0이라도 당일 매도(sold_today)가 존재하면 0주 졸업 엔진 강제 격발 및 스냅샷 충돌 방어.
-# MODIFIED: [V30.09 핫픽스] pytz 영구 적출 및 ZoneInfo 도입으로 LMT 버그 차단 및 타임존 락온 100% 달성.
-# NEW: [V40.XX 옴니 매트릭스] SOXL/SOXS 듀얼 모멘텀 대응 동기화 인터페이스 완벽 분기 적용
+# FILE: telegram_sync_engine.py
 # ==========================================================
 import logging
 import datetime
@@ -270,7 +258,19 @@ class TelegramSyncEngine:
                     
                     sold_today_vrev = sum(int(float(ex.get('ft_ccld_qty') or '0')) for ex in target_execs if ex.get('sll_buy_dvsn_cd') == "01") if target_execs else 0
                     
-                    if actual_qty == 0 and (vrev_ledger_qty > 0 or sold_today_vrev > 0):
+                    # 🚨 NEW: [V44.08 장부 오염 디커플링] AVWAP 암살자 보유 수량 정밀 차감
+                    avwap_qty = 0
+                    try:
+                        jobs = context.job_queue.jobs() if context.job_queue else []
+                        job_data = jobs[0].data if jobs and jobs[0].data is not None else {}
+                        tracking_cache = job_data.get('sniper_tracking', {})
+                        avwap_qty = tracking_cache.get(f"AVWAP_QTY_{ticker}", 0)
+                    except Exception:
+                        pass
+                    
+                    adjusted_actual_qty = max(0, actual_qty - avwap_qty)
+                    
+                    if adjusted_actual_qty == 0 and (vrev_ledger_qty > 0 or sold_today_vrev > 0):
                         if now_kst.hour < 10:
                             await context.bot.send_message(chat_id, "⏳ <b>증권사 확정 정산(10:00 KST) 대기 중입니다.</b> 가결제 오차 방지를 위해 졸업 카드 발급 및 장부 초기화가 보류됩니다.", parse_mode='HTML')
                             self._sync_escrow_cash(ticker)
@@ -446,11 +446,11 @@ class TelegramSyncEngine:
                         self._sync_escrow_cash(ticker)
                         return "SUCCESS"
                         
-                    if actual_qty == vrev_ledger_qty:
+                    if adjusted_actual_qty == vrev_ledger_qty:
                         pass
                     else:
-                        if actual_qty > 0 and actual_qty < vrev_ledger_qty:
-                            gap_qty = vrev_ledger_qty - actual_qty
+                        if adjusted_actual_qty > 0 and adjusted_actual_qty < vrev_ledger_qty:
+                            gap_qty = vrev_ledger_qty - adjusted_actual_qty
                             
                             vwap_state_file = f"data/vwap_state_REV_{ticker}.json"
                             if os.path.exists(vwap_state_file):
@@ -466,12 +466,12 @@ class TelegramSyncEngine:
                                 except Exception as e:
                                     logging.error(f"🚨 VWAP 상태 교정 에러: {e}")
 
-                            calibrated = self.queue_ledger.sync_with_broker(ticker, actual_qty, actual_avg)
+                            calibrated = self.queue_ledger.sync_with_broker(ticker, adjusted_actual_qty, actual_avg)
                             if calibrated:
                                 await context.bot.send_message(chat_id, f"🔧 <b>[{ticker}] V-REV 큐(Queue) 비파괴 보정 완료!</b>\n▫️ 수동 매도 물량(<b>{gap_qty}주</b>)을 LIFO 큐에서 안전하게 차감했습니다.", parse_mode='HTML')
                                 
-                        elif actual_qty > 0 and actual_qty > vrev_ledger_qty:
-                            gap_qty = actual_qty - vrev_ledger_qty
+                        elif adjusted_actual_qty > 0 and adjusted_actual_qty > vrev_ledger_qty:
+                            gap_qty = adjusted_actual_qty - vrev_ledger_qty
                             
                             real_buy_price = actual_avg
                             try:
@@ -498,7 +498,7 @@ class TelegramSyncEngine:
 
                             if real_buy_price == actual_avg:
                                 old_invested = sum(float(item.get("qty", 0)) * float(item.get("price", 0)) for item in q_data_before)
-                                new_invested = actual_qty * actual_avg
+                                new_invested = adjusted_actual_qty * actual_avg
                                 if new_invested > old_invested:
                                     derived_price = (new_invested - old_invested) / gap_qty
                                     real_buy_price = round(derived_price, 4) if derived_price > 0 else actual_avg

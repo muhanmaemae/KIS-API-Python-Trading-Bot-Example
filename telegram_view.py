@@ -1,8 +1,6 @@
+# MODIFIED: [V44.08 수동 덫 UI 영구 소각] V-REV 모드에 한하여 자전거래 의심을 차단하기 위해 [🚀 주문 실행] (수동 장전) 버튼 렌더링을 100% 영구 소각.
 # ==========================================================
-# [telegram_view.py] - 🌟 100% 통합 무결점 완성본 (V44.06) 🌟
-# 🚨 MODIFIED: [V43.27 데드코드 소각 및 달러 타점 팩트 동기화] AVWAP 콘솔 독립 분리에 따라 불필요해진 get_avwap_console_menu 데드코드를 완전히 소각하고, 통합지시서(/sync)의 V14 모드에서도 물량 보유 시 '달러($) 익절 목표가'를 팩트로 렌더링하도록 뷰포트 파격 업그레이드 완료.
-# NEW: [V44.05 가상 에스크로] V-REV 0주 새출발 및 예방적 방어선 구축 문구를 '가상격리' 및 '가상 매수'로 팩트 교정 완료.
-# MODIFIED: [V44.06 텍스트 다이어트] 화면에 표출되는 불필요한 '(가상격리)' 꼬리표 전면 소각 완료.
+# FILE: telegram_view.py
 # ==========================================================
 import os
 import math
@@ -238,7 +236,7 @@ class TelegramView:
         page_items = history_data[start_idx:end_idx]
 
         msg = "🚀 <b>[ PIPIOS 퀀트 엔진 패치노트 ]</b>\n"
-        msg += "▫️ 현재 시스템: <code>V44.06 가상 에스크로 텍스트 락온</code>\n\n"
+        msg += "▫️ 현재 시스템: <code>V44.08 수동 덫 렌더링 소각</code>\n\n"
         
         for item in page_items:
             if isinstance(item, str):
@@ -445,8 +443,7 @@ class TelegramView:
                     raw_guidance = '\n'.join(filtered_lines)
 
                 raw_guidance = raw_guidance.rstrip('\n')
-                # MODIFIED: [V44.06 가상 에스크로] 화면 렌더링 텍스트 다이어트 (가상격리 꼬리표 전면 소각)
-                raw_guidance = raw_guidance.replace(" (LOC)", "").replace(" (VWAP)", "")
+                raw_guidance = raw_guidance.replace(" (LOC)", "").replace(" (VWAP)", "").replace("[가상격리] ", "").replace("[가상 ", "[").replace("가상 ", "")
                 body_msg += raw_guidance + "\n\n"
 
             else:
@@ -487,8 +484,11 @@ class TelegramView:
                         if prices:
                             body_msg += f" 🧹 줍줍({len(jup_orders)}개): <b>${prices[0]} ~ ${prices[-1]} (LOC)</b>\n"
                     
+                    # 🚨 NEW: [V44.08 수동 덫 UI 영구 소각] V-REV 모드 수동 덫 장전 버튼 렌더링을 완전히 배제함
                     if is_trade_active:
-                        if t_info.get('is_locked', False):
+                        if v_mode == "V_REV":
+                            body_msg += " (🔒 예방 덫 수동 장전 영구 소각 완료)\n"
+                        elif t_info.get('is_locked', False):
                             body_msg += " (✅ 금일 주문 완료/잠금)\n"
                         else:
                             keyboard.append([InlineKeyboardButton(f"🚀 {t} 주문 실행", callback_data=f"EXEC:{t}")])
@@ -793,4 +793,3 @@ class TelegramView:
             [InlineKeyboardButton("💎 오리지널 TQQQ + SOXL 듀얼 콤보", callback_data="TICKER:ALL")]
         ]
         return f"🔄 <b>[ 운용 종목 선택 ]</b>\n현재 가동중: <b>{', '.join(current_tickers)}</b>", InlineKeyboardMarkup(keyboard)
-

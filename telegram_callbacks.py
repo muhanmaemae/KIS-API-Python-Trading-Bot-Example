@@ -1,9 +1,6 @@
+# MODIFIED: [V44.08 가상 락다운 콜백 해체] 불필요해진 V-REV 수동 덫 장전 우회(Virtual Escrow) 로직을 전면 도려내고, 해당 콜백 접근 시 즉각 락다운(Alert) 팝업을 띄우도록 클린 라우팅 수술 완료.
 # ==========================================================
-# [telegram_callbacks.py] - 🌟 100% 통합 완성본 🌟 (Full Version)
-# 🚨 MODIFIED: [V42.00 아키텍처 개편] SOXS 메인 종목 모드 전환 영구 락다운 및 듀얼 모멘텀 티커 라우팅 팩트 정립
-# 🚨 MODIFIED: [V43.00 작전 통제실 복구] AVWAP 커스텀 목표수익률(Target) 및 근무모드(조기퇴근/출장) 변경 콜백(AVWAP_SET) 라우팅 신설 완료.
-# 🚨 MODIFIED: [V43.26 콜백 시퀀스 교정 및 팝업 쉴드] 텔레그램 API가 Edit과 Send를 동시 호출 시 패킷을 누락(Drop)시키는 맹점을 타파하기 위해 실행 시퀀스를 분리.
-# NEW: [V44.05 가상 에스크로 락다운] 수동 덫 장전(EXEC) 버튼 클릭 시, KIS 서버에 물리적 주문을 전송하지 않고 가상 에스크로(Virtual Escrow) 락온 팩트만 스냅샷에 업데이트하도록 우회(Bypass) 이식 완료
+# FILE: telegram_callbacks.py
 # ==========================================================
 import logging
 import datetime
@@ -397,100 +394,13 @@ class TelegramCallbacks:
             t = sub
             ver = self.cfg.get_version(t)
 
-            # 🚨 NEW: [V44.05 가상 에스크로 락다운] V-REV는 자전거래 방어를 위해 물리적 수동 전송 원천 차단
+            # 🚨 MODIFIED: [V44.09 예방 덫 영구 소각] V-REV는 자전거래 의심 회피를 위해 예방 덫을 완전히 소각했으므로 해당 콜백 접근 시 락다운 팝업 출력
             if ver == "V_REV":
-                await query.answer("🛑 [가상 에스크로 락온] V-REV는 자전거래(FDS) 방어를 위해 물리적 덫 수동 장전 기능을 영구 소각하고 가상 장부로 100% 대체되었습니다.", show_alert=True)
-                
-                # 내부적으로 스냅샷을 갱신하고 가상 락온 상태로만 전환
-                async with self.tx_lock:
-                    cash, holdings = await asyncio.to_thread(self.broker.get_account_balance)
-                    safe_holdings = holdings if isinstance(holdings, dict) else {}
-                    h = safe_holdings.get(t, {'qty':0, 'avg':0})
-                    safe_avg = float(h.get('avg') or 0.0)
-                    safe_qty = int(float(h.get('qty') or 0))
-                    
-                    curr_p = float(await asyncio.to_thread(self.broker.get_current_price, t) or 0.0)
-                    prev_c = float(await asyncio.to_thread(self.broker.get_previous_close, t) or 0.0)
-                    
-                    q_data = self.queue_ledger.get_queue(t) if getattr(self, 'queue_ledger', None) else []
-                    cached_snap = getattr(self, 'strategy_rev', None)
-                    if cached_snap:
-                        cached_snap = cached_snap.load_daily_snapshot(t)
-                    logic_qty = safe_qty
-                    if cached_snap and "total_q" in cached_snap:
-                        logic_qty = cached_snap["total_q"]
-                    
-                    rev_budget = float(self.cfg.get_seed(t) or 0.0) * 0.15
-                    half_portion_cash = rev_budget * 0.5
-                    
-                    loc_orders = []
-                    
-                    if q_data and logic_qty > 0:
-                        dates_in_queue = sorted(list(set(item.get('date') for item in q_data if item.get('date'))), reverse=True)
-                        l1_qty = 0
-                        l1_price = 0.0
-                        if dates_in_queue:
-                            lots_1 = [item for item in q_data if item.get('date') == dates_in_queue[0]]
-                            l1_qty = sum(item.get('qty', 0) for item in lots_1)
-                            if l1_qty > 0:
-                                l1_price = sum(item.get('qty', 0) * item.get('price', 0.0) for item in lots_1) / l1_qty
-                        
-                        target_l1 = round(l1_price * 1.006, 2)
-                        
-                        if l1_qty > 0:
-                            loc_orders.append({'side': 'SELL', 'qty': l1_qty, 'price': target_l1, 'type': 'LOC', 'desc': '[가상 1층 단독]'})
-                            
-                        upper_qty = logic_qty - l1_qty
-                        if upper_qty > 0:
-                            upper_invested = (logic_qty * safe_avg) - (l1_qty * l1_price)
-                            if upper_invested > 0 and upper_qty > 0:
-                                upper_avg = upper_invested / upper_qty
-                            else:
-                                upper_avg = l1_price
-                                
-                            target_upper = round(upper_avg * 1.005, 2)
-                            loc_orders.append({'side': 'SELL', 'qty': upper_qty, 'price': target_upper, 'type': 'LOC', 'desc': '[가상 상위 재고]'})
-                    
-                    if prev_c > 0:
-                        b1_price = round(prev_c / 0.935 if logic_qty == 0 else prev_c * 0.995, 2)
-                        b2_price = round(prev_c * 0.999 if logic_qty == 0 else prev_c * 0.9725, 2)
-                        
-                        b1_qty = math.floor(half_portion_cash / b1_price) if b1_price > 0 else 0
-                        b2_qty = math.floor(half_portion_cash / b2_price) if b2_price > 0 else 0
-                        
-                        if b1_qty > 0:
-                            loc_orders.append({'side': 'BUY', 'qty': b1_qty, 'price': b1_price, 'type': 'LOC', 'desc': '가상 매수(Buy1)'})
-                        if b2_qty > 0:
-                            loc_orders.append({'side': 'BUY', 'qty': b2_qty, 'price': b2_price, 'type': 'LOC', 'desc': '가상 매수(Buy2)'})
-                            
-                        if logic_qty == 0:
-                            pass 
-                        elif b2_qty > 0 and b2_price > 0:
-                            for n in range(1, 6):
-                                grid_p = round(half_portion_cash / (b2_qty + n), 2)
-                                if grid_p >= 0.01 and grid_p < b2_price:
-                                    loc_orders.append({'side': 'BUY', 'qty': 1, 'price': grid_p, 'type': 'LOC', 'desc': f'가상 줍줍({n})'})
-
-                    msg = f"🛡️ <b>[{t}] V-REV 예방적 덫 가상 에스크로 수동 락온 완료</b>\n"
-                    
-                    if logic_qty == 0:
-                        msg += "🚫 <code>[0주 새출발] 기준 평단가 부재 (1층 확보 예산 가상 격리 완료)</code>\n"
-                        
-                    for o in loc_orders:
-                        msg += f"└ [가상격리] {o['desc']} {o['qty']}주 (${o['price']})\n"
-                        await asyncio.sleep(0.1)
-                        
-                    if len(loc_orders) > 0:
-                        self.cfg.set_lock(t, "REG")
-                        msg += "\n🔒 <b>VWAP 예산 가상 격리 완료 (물리적 전송 생략됨)</b>"
-                    else:
-                        msg += "\n⚠️ <b>가상 격리할 예산/수량이 없습니다.</b>"
-                        
-                    await query.edit_message_text(msg, parse_mode='HTML')
+                await query.answer("🛑 [예방 덫 전면 소각] V-REV 모드는 자전거래 의심을 회피하고 AVWAP 암살자 가동을 위해 예방 덫 수동 장전 기능을 영구 소각했습니다.", show_alert=True)
                 return
 
             await query.answer()
-            if ver == "V_REV" and getattr(self.cfg, 'get_manual_vwap_mode', lambda x: False)(t):
+            if getattr(self.cfg, 'get_manual_vwap_mode', lambda x: False)(t):
                 await context.bot.send_message(chat_id, "🚨 [격발 차단] 수동(한투 알고리즘) 모드가 가동 중입니다. 지시서를 참고하여 한투 앱(V앱)에서 직접 매매를 걸어주십시오.")
                 return
             
