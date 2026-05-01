@@ -1,5 +1,5 @@
 # ==========================================================
-# [scheduler_sniper.py] - 🌟 100% 분할 캡슐화 완성본 (V44.35) 🌟
+# [scheduler_sniper.py] - 🌟 100% 분할 캡슐화 완성본 (V44.40) 🌟
 # 🚨 MODIFIED: [V32.00 그랜드 수술] 불필요한 AVWAP 동적 파라미터 배선 전면 소각 및 클린 라우팅 적용
 # NEW: [V40.XX 옴니 매트릭스] 전역 국면 데이터(regime_data) 수신 및 스나이퍼(AVWAP/V14) 듀얼 라우팅 락온 탑재
 # 🚨 MODIFIED: [V41.XX 파격적 수술] AVWAP 쿨다운 및 손절 셧다운 동결 전면 소각 & 무제한 다중 타격 룰 이식
@@ -10,6 +10,7 @@
 # 🚨 MODIFIED: [V44.20 암살자 마비 맹점 완벽 적출] YF 시가(Open) 스캔 실패 시 스케줄러가 통째로 스킵되던 치명적 맹점(continue)을 전면 소각하여 무결성 확보.
 # 🚨 MODIFIED: [V44.21 옴니 매트릭스 디커플링] 10:00 EST에 고정된 정적 국면(Regime) 데이터가 AVWAP의 실시간 동적 모멘텀(돌파)을 가로막던 하극상 락다운을 완벽히 해체(regime_data=None)하여 사냥 본능 100% 해방.
 # 🚨 MODIFIED: [V44.35 AVWAP 하드스탑 및 조기퇴근 셧다운 오버라이드 수술] reason 텍스트에 포함된 조기퇴근 및 HARD_STOP 플래그를 scheduler가 무시하고 False로 덮어쓰던 하극상 맹점 원천 차단. 팩트 기반 영구 동결(Shutdown) 락온 이식 완료.
+# MODIFIED: [V44.40 엣지 케이스 방어] AVWAP 및 스나이퍼 교착 방어, 조기퇴근 셧다운 오버라이드 및 V14 예산 중복 방어 이식.
 # ==========================================================
 import logging
 import datetime
@@ -105,6 +106,10 @@ async def scheduled_sniper_monitor(context):
                             except Exception: pass
                         if _now_est.time() < datetime.time(15, 27):
                             virtual_locked_budget += max(0.0, rev_daily_budget - spent)
+                    # MODIFIED: [V44.40 엣지 케이스 방어] V14 예산 중복 방어
+                    elif cfg.get_version(tk) == "V14":
+                        _, dynamic_budget, _ = cfg.calculate_v14_state(tk)
+                        virtual_locked_budget += dynamic_budget
             except Exception as e:
                 logging.error(f"🚨 가상 에스크로 예산 산출 중 에러: {e}")
                 
@@ -245,6 +250,9 @@ async def scheduled_sniper_monitor(context):
                                     await asyncio.sleep(2.0)
                             
                                 if has_unfilled:
+                                    # MODIFIED: [V44.40 엣지 케이스 방어] AVWAP 교착 방어 (매수)
+                                    await asyncio.to_thread(broker.cancel_targeted_orders, current_target, "02", "00")
+                                    await asyncio.sleep(1.0)
                                     continue
                                     
                                 res = await asyncio.to_thread(broker.send_order, current_target, "BUY", qty, price, "LIMIT")
@@ -324,6 +332,9 @@ async def scheduled_sniper_monitor(context):
                                     await asyncio.sleep(2.0)
                                 
                                 if has_unfilled:
+                                    # MODIFIED: [V44.40 엣지 케이스 방어] AVWAP 교착 방어 (매도)
+                                    await asyncio.to_thread(broker.cancel_targeted_orders, current_target, "01", "00")
+                                    await asyncio.sleep(1.0)
                                     continue
 
                                 res = await asyncio.to_thread(broker.send_order, current_target, "SELL", qty, exec_price, "LIMIT")
@@ -380,6 +391,11 @@ async def scheduled_sniper_monitor(context):
                                             avwap_free_cash += (ccld_qty * exec_price)
                                         else:
                                             msg += f"\n⚠️ 잔량 {new_qty}주 발생 (미체결 강제 취소됨, 다음 1분봉 루프에서 재시도)"
+                                            
+                                            # MODIFIED: [V44.40 엣지 케이스 방어] 조기퇴근 셧다운 오버라이드
+                                            if any(k in reason for k in ["조기퇴근", "HARD_STOP", "손절", "TIME_STOP"]):
+                                                shutdown_flag = True
+                                                
                                             new_avg = tracking_cache.get(f"AVWAP_AVG_{current_target}", 0.0)
 
                                         await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
@@ -442,6 +458,9 @@ async def scheduled_sniper_monitor(context):
                             await asyncio.sleep(2.0)
                         
                         if has_unfilled:
+                            # MODIFIED: [V44.40 엣지 케이스 방어] 일반 스나이퍼 교착 방어 (매수)
+                            await asyncio.to_thread(broker.cancel_targeted_orders, t, "02", "00")
+                            await asyncio.sleep(1.0)
                             continue
                             
                         order_res = await asyncio.to_thread(broker.send_order, t, "BUY", qty, limit_p, "LIMIT")
@@ -532,6 +551,9 @@ async def scheduled_sniper_monitor(context):
                             await asyncio.sleep(2.0)
                         
                         if has_unfilled:
+                            # MODIFIED: [V44.40 엣지 케이스 방어] 일반 스나이퍼 교착 방어 (매도)
+                            await asyncio.to_thread(broker.cancel_targeted_orders, t, "01", "00")
+                            await asyncio.sleep(1.0)
                             continue
                             
                         order_res = await asyncio.to_thread(broker.send_order, t, "SELL", qty, limit_p, "LIMIT")

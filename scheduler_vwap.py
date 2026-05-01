@@ -1,10 +1,12 @@
+# ==========================================================
+# FILE: scheduler_vwap.py
+# ==========================================================
 # MODIFIED: [V44.27 0주 스냅샷 환각 락온] 서버 재시작으로 스냅샷이 증발했을 때, 장중 VWAP 매수 물량을 과거 물량으로 오판하여 기보유 상태로 전환되는 맹점 차단. 큐 장부 및 메인 장부에서 당일 날짜(EST)를 수학적으로 도려내고 순수 이월 장부만 역산하여 0주 출발 팩트 100% 복구 완료.
 # MODIFIED: [V44.27 뇌동매매 증발 오판 방어] KIS 총잔고에서 AVWAP 암살자 물량을 완벽히 격리한 pure_actual_qty 로 뇌동매매 증발(0주) 셧다운 감지 수행
 # MODIFIED: [V44.27 물귀신 덤핑 차단] V-REV 스윕 덤핑 시 암살자 물량이 동반 투매되는 사태를 막기 위해 순수 매도 가능 수량(pure_sellable_qty)으로 정밀 캡핑
 # MODIFIED: [V44.27 AVWAP 잔고 오염 방어] V14_VWAP 런타임 엔진에 KIS 총잔고 대신 암살자 물량이 배제된 pure_qty_v14를 주입하여 동적 플랜 훼손 원천 차단
 # MODIFIED: [V44.36 VWAP 페일세이프 락다운 버그 및 환각 방어막 이식] Nuke 실패 시 상태 플래그를 False로 리셋하여 다음 1분봉에서 재시도를 보장(EC-1 교정)하고, 코파일럿의 is_zero_start 역산 로직 훼손 시도를 원천 차단하는 백신 주석 하드코딩 완료.
-# ==========================================================
-# FILE: scheduler_vwap.py
+# MODIFIED: [V44.40 엣지 케이스 방어] V14_VWAP 당일 물량 역산 필터링 및 스냅샷 영구 박제(Failsafe) 강제 호출 로직 이식 완료.
 # ==========================================================
 import logging
 import datetime
@@ -300,6 +302,13 @@ async def scheduled_vwap_trade(context):
                                 logging.warning(f"🚨 [{t}] V-REV 스냅샷 증발! 큐 장부 타임머신 역산 결과 0주 새출발 팩트 복원 완료.")
                             else:
                                 is_zero_start = (total_q == 0)
+                                
+                            # MODIFIED: [V44.40 엣지 케이스 방어] 역산 직후 스냅샷 영구 박제 (V_REV)
+                            rev_alloc_cash = float(cfg.get_seed(t) or 0.0) * 0.15
+                            strategy_rev.ensure_failsafe_snapshot(
+                                ticker=t, curr_p=curr_p, prev_c=prev_c, alloc_cash=rev_alloc_cash, 
+                                q_data=q_data, total_kis_qty=actual_qty, avwap_qty=avwap_qty_for_shutdown
+                            )
                         else:
                             is_zero_start = cached_plan.get("is_zero_start", cached_plan.get("total_q", -1) == 0)
                             
@@ -395,7 +404,7 @@ async def scheduled_vwap_trade(context):
                                                 else:
                                                     ccld_qty = actual_sweep_qty
                                                     break
-                                       
+                                            
                                             if ccld_qty < actual_sweep_qty:
                                                 try:
                                                     await asyncio.to_thread(broker.cancel_order, t, odno)
@@ -560,7 +569,9 @@ async def scheduled_vwap_trade(context):
                         if not cached_snap_v14:
                             ledger_qty = 0
                             try:
-                                recs = [r for r in cfg.get_ledger() if r['ticker'] == t]
+                                # MODIFIED: [V44.40 엣지 케이스 방어] V14_VWAP 0주 역산 필터링
+                                today_str_est = now_est.strftime("%Y-%m-%d")
+                                recs = [r for r in cfg.get_ledger() if r['ticker'] == t and not str(r.get("date", "")).startswith(today_str_est)]
                                 ledger_qty, _, _, _ = cfg.calculate_holdings(t, recs)
                             except Exception: pass
                             
@@ -568,6 +579,13 @@ async def scheduled_vwap_trade(context):
                             if is_zero_start_session:
                                 pure_qty_v14 = 0 
                                 logging.warning(f"🚨 [{t}] V14_VWAP 스냅샷 증발! 메인 장부 역산 결과 0주 새출발 팩트 복원 완료.")
+                            
+                            # MODIFIED: [V44.40 엣지 케이스 방어] 역산 직후 스냅샷 영구 박제 (V14)
+                            _, v14_alloc_cash, _ = cfg.calculate_v14_state(t)
+                            v14_vwap_plugin.ensure_failsafe_snapshot(
+                                ticker=t, current_price=curr_p, total_qty=actual_qty, 
+                                avwap_qty=avwap_qty_v14, avg_price=actual_avg, prev_close=prev_c, alloc_cash=v14_alloc_cash
+                            )
                         else:
                             is_zero_start_session = cached_snap_v14.get("is_zero_start", cached_snap_v14.get("total_q", -1) == 0)
                         
@@ -606,7 +624,7 @@ async def scheduled_vwap_trade(context):
                                 await asyncio.sleep(2.0)
                                 unfilled_check = await asyncio.to_thread(broker.get_unfilled_orders_detail, t)
                                 safe_unfilled = unfilled_check if isinstance(unfilled_check, list) else []
-                                
+
                                 my_order = next((ox for ox in safe_unfilled if ox.get('odno') == odno), None)
                                 if my_order:
                                     ccld_qty = int(float(my_order.get('tot_ccld_qty') or 0))
