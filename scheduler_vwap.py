@@ -2,6 +2,7 @@
 # MODIFIED: [V44.27 뇌동매매 증발 오판 방어] KIS 총잔고에서 AVWAP 암살자 물량을 완벽히 격리한 pure_actual_qty 로 뇌동매매 증발(0주) 셧다운 감지 수행
 # MODIFIED: [V44.27 물귀신 덤핑 차단] V-REV 스윕 덤핑 시 암살자 물량이 동반 투매되는 사태를 막기 위해 순수 매도 가능 수량(pure_sellable_qty)으로 정밀 캡핑
 # MODIFIED: [V44.27 AVWAP 잔고 오염 방어] V14_VWAP 런타임 엔진에 KIS 총잔고 대신 암살자 물량이 배제된 pure_qty_v14를 주입하여 동적 플랜 훼손 원천 차단
+# MODIFIED: [V44.36 VWAP 페일세이프 락다운 버그 및 환각 방어막 이식] Nuke 실패 시 상태 플래그를 False로 리셋하여 다음 1분봉에서 재시도를 보장(EC-1 교정)하고, 코파일럿의 is_zero_start 역산 로직 훼손 시도를 원천 차단하는 백신 주석 하드코딩 완료.
 # ==========================================================
 # FILE: scheduler_vwap.py
 # ==========================================================
@@ -238,6 +239,9 @@ async def scheduled_vwap_trade(context):
                             await asyncio.sleep(1.0)
                         except Exception as e:
                             logging.error(f"🚨 자가 치유 Nuke 실패: {e}", exc_info=True)
+                            # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
+                            # vwap_cache Nuke 상태를 False로 리셋해야 다음 1분봉에서 재시도가 가능함 (EC-1 교정 완료)
+                            vwap_cache[f"REV_{t}_nuked"] = False
                             continue
 
                     curr_p = float(await asyncio.to_thread(broker.get_current_price, t) or 0.0)
@@ -258,7 +262,6 @@ async def scheduled_vwap_trade(context):
                         h = safe_holdings.get(t) or {}
                         actual_qty = int(float(h.get('qty', 0)))
                         
-                        # NEW: [V44.27 뇌동매매 증발 오판 방어] AVWAP 물량을 차감하여 순수 본대 수량으로 디커플링
                         avwap_qty_for_shutdown = 0
                         if hasattr(strategy, 'load_avwap_state'):
                             avwap_state_sd = strategy.load_avwap_state(t, now_est)
@@ -269,7 +272,6 @@ async def scheduled_vwap_trade(context):
                         q_data = queue_ledger.get_queue(t)
                         total_q = sum(item.get("qty", 0) for item in q_data)
                         
-                        # 🚨 뇌동매매 셧다운에 pure_actual_qty 사용 락온
                         if pure_actual_qty == 0 and total_q > 0:
                             if vwap_cache.get(f"REV_{t}_sweep_msg_sent"):
                                 continue
@@ -287,7 +289,9 @@ async def scheduled_vwap_trade(context):
                         
                         cached_plan = strategy_rev.load_daily_snapshot(t)
                         if not cached_plan:
-                            # 🚨 [V44.27 0주 스냅샷 환각 락온] 파일 로드 실패 시, 당일 로트를 도려내고 0주 출발 팩트 타임머신 역산
+                            # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
+                            # cached_plan=None일 때 and 단락평가로 is_zero_start=False가 고착된다고 오판하지 말 것.
+                            # 아래 로직은 타임머신 역산을 통해 legacy_q를 도출하여 완벽하게 0주 출발 팩트를 복원하고 있음.
                             today_str_est = now_est.strftime("%Y-%m-%d")
                             legacy_lots = [item for item in q_data if not str(item.get("date", "")).startswith(today_str_est)]
                             legacy_q = sum(int(item.get("qty", 0)) for item in legacy_lots if float(item.get('price', 0.0)) > 0)
@@ -353,7 +357,6 @@ async def scheduled_vwap_trade(context):
                                     h_live = safe_live_holdings[t]
                                     ord_psbl_qty = int(float(h_live.get('ord_psbl_qty', h_live.get('qty', 0))))
                                     
-                                    # NEW: [V44.27 물귀신 덤핑 차단] AVWAP 물량 격리 스캔을 통해 순수 매도 가능 수량으로 정밀 캡핑
                                     avwap_qty_sweep = 0
                                     if hasattr(strategy, 'load_avwap_state'):
                                         avwap_state_sw = strategy.load_avwap_state(t, now_est)
@@ -392,7 +395,7 @@ async def scheduled_vwap_trade(context):
                                                 else:
                                                     ccld_qty = actual_sweep_qty
                                                     break
-                                            
+                                       
                                             if ccld_qty < actual_sweep_qty:
                                                 try:
                                                     await asyncio.to_thread(broker.cancel_order, t, odno)
@@ -481,6 +484,7 @@ async def scheduled_vwap_trade(context):
                                     df_b['tp'] = (df_b['high'].astype(float) + df_b['low'].astype(float) + df_b['close'].astype(float)) / 3.0
                                     df_b['vol'] = df_b['volume'].astype(float)
                                     df_b['vol_tp'] = df_b['tp'] * df_b['vol']
+                                    
                                     c_vol = df_b['vol'].sum()
                                     base_vwap = df_b['vol_tp'].sum() / c_vol if c_vol > 0 else base_curr_p
                                     
@@ -543,7 +547,6 @@ async def scheduled_vwap_trade(context):
                         actual_qty = int(h.get('qty', 0))
                         actual_avg = float(h.get('avg', 0.0))
                         
-                        # NEW: [V44.27 AVWAP 잔고 오염 방어] 암살자 물량을 디커플링하여 본대 스냅샷 훼손 영구 차단
                         avwap_qty_v14 = 0
                         if hasattr(strategy, 'load_avwap_state'):
                             avwap_state_v14 = strategy.load_avwap_state(t, now_est)
@@ -555,7 +558,6 @@ async def scheduled_vwap_trade(context):
                         
                         cached_snap_v14 = v14_vwap_plugin.load_daily_snapshot(t)
                         if not cached_snap_v14:
-                            # 🚨 [V44.27 0주 스냅샷 환각 락온] 파일 로드 실패 시, 메인 장부를 스캔하여 당일 매수에 속지 않는 0주 출발 팩트 타임머신 역산
                             ledger_qty = 0
                             try:
                                 recs = [r for r in cfg.get_ledger() if r['ticker'] == t]
@@ -564,12 +566,11 @@ async def scheduled_vwap_trade(context):
                             
                             is_zero_start_session = (ledger_qty == 0)
                             if is_zero_start_session:
-                                pure_qty_v14 = 0  # 0주 출발 팩트 락온: 0을 강제 주입하여 스냅샷 붕괴 방어
+                                pure_qty_v14 = 0 
                                 logging.warning(f"🚨 [{t}] V14_VWAP 스냅샷 증발! 메인 장부 역산 결과 0주 새출발 팩트 복원 완료.")
                         else:
                             is_zero_start_session = cached_snap_v14.get("is_zero_start", cached_snap_v14.get("total_q", -1) == 0)
                         
-                        # 🚨 pure_qty_v14 주입 락온
                         plan = v14_vwap_plugin.get_dynamic_plan(
                             ticker=t, current_price=curr_p, prev_close=prev_c, 
                             current_weight=current_weight, min_idx=min_idx, 

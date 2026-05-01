@@ -1,6 +1,7 @@
 # MODIFIED: [V44.27 0주 스냅샷 환각 락온] 서버 재시작으로 인메모리 스냅샷이 소실되었을 때, VWAP이 장중 매수한 로트를 기보유 물량으로 오판하여 매도를 재개(하극상)하던 맹점 원천 차단. 큐 장부에서 당일 날짜(EST)의 로트를 100% 도려내고 오직 어제까지 이월된 순수 과거 물량만을 스캔하여 '0주 새출발' 상태를 완벽히 팩트 복구하는 타임머신 역산 엔진 이식 완료.
 # MODIFIED: [V44.25 예산 탈취(Stealing) 런타임 붕괴 방어막 이식] Buy1이 Buy2의 미사용 예산을 훔쳐와 무한 타격(34주 체결 등)하는 차원 붕괴를 영구 소각.
 # MODIFIED: [V44.25 AVWAP 디커플링] VWAP 기상 전 스냅샷 2중 교차 검증(Fail-Safe) 및 암살자 물량(AVWAP) 100% 격리(Decoupling) 파이프라인 이식 완료.
+# MODIFIED: [V44.36 큐 장부 vs 브로커 실잔고 불일치 팩트 스캔] 페일세이프 스냅샷 복원 시 KIS 순수 본대 수량과 큐 장부 이월 수량 간의 팩트 불일치가 발생할 경우 명시적으로 경고를 타전하여 CALIB 보정을 유도하도록 감시망(EC-3) 이식 완료.
 # ==========================================================
 # FILE: strategy_reversion.py
 # ==========================================================
@@ -153,6 +154,10 @@ class ReversionStrategy:
         legacy_lots = [item for item in q_data if not str(item.get("date", "")).startswith(today_str_est)]
         legacy_q = sum(int(item.get("qty", 0)) for item in legacy_lots if float(item.get('price', 0.0)) > 0)
         
+        # NEW: [V44.36 큐 장부 vs 브로커 실잔고 불일치 팩트 스캔]
+        if pure_qty != legacy_q:
+            logging.warning(f"⚠️ [{ticker}] V-REV 페일세이프 경고: KIS 순수 본대 수량({pure_qty}주)과 이월 큐 장부 수량({legacy_q}주) 불일치 감지. CALIB 비파괴 보정 또는 수동 동기화 요망.")
+            
         logging.warning(f"🚨 [{ticker}] V_REV 스냅샷 증발 감지! 페일세이프 긴급 복원 가동 (KIS총잔고:{total_kis_qty} - 암살자:{avwap_qty} = 본대:{pure_qty}주 | 이월 큐 장부:{legacy_q}주)")
         
         return self.get_dynamic_plan(
@@ -390,7 +395,7 @@ class ReversionStrategy:
             b2_budget_slice = min(b2_bucket, max(0.0, rem_budget - b1_budget_slice))
 
             if curr_p > 0:
-                if is_zero_start_session or curr_p <= p1_trigger:
+                if buy_star_price > 0 and (is_zero_start_session or curr_p <= p1_trigger):
                     alloc_q1 = int(math.floor(b1_budget_slice / curr_p))
                     self.residual["BUY1"][ticker] = b1_bucket - (alloc_q1 * curr_p)
                     if alloc_q1 > 0:
