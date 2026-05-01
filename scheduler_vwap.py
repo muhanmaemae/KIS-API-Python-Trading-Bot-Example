@@ -8,6 +8,7 @@
 # MODIFIED: [V44.36 VWAP 페일세이프 락다운 버그 및 환각 방어막 이식] Nuke 실패 시 상태 플래그를 False로 리셋하여 다음 1분봉에서 재시도를 보장(EC-1 교정)하고, 코파일럿의 is_zero_start 역산 로직 훼손 시도를 원천 차단하는 백신 주석 하드코딩 완료.
 # MODIFIED: [V44.40 엣지 케이스 방어] V14_VWAP 당일 물량 역산 필터링 및 스냅샷 영구 박제(Failsafe) 강제 호출 로직 이식 완료.
 # MODIFIED: [V44.44 이벤트 루프 교착 방어] is_market_open 동기 함수 비동기 래핑 및 타임아웃 Fail-Open 족쇄 체결 완료.
+# NEW: [V44.45 잭팟 데드존 방어] 장막판 스윕 구간에서 잭팟 돌파 시 VWAP 분할 매도를 차단하던 환각 방어막 철거. 정상적으로 1분 슬라이싱 타격을 병행하도록 교정 완료.
 # ==========================================================
 import logging
 import datetime
@@ -462,7 +463,8 @@ async def scheduled_vwap_trade(context):
                                             await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
                                             vwap_cache[f"REV_{t}_sweep_skip_msg"] = True
                                             
-                            if target_sweep_qty > 0 or (total_q > 0 and curr_p >= jackpot_trigger):
+                            # MODIFIED: [V44.45 잭팟 데드존 방어] 과잉 방어막 도려내기. 잭팟 달성 시 VWAP 분할 매도를 차단하던 환각 맹점 철거. 스윕이 발생했을 때만 하위 VWAP을 건너뛰도록 교정.
+                            if target_sweep_qty > 0:
                                 continue 
                         
                         try:
