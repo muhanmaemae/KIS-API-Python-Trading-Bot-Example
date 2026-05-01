@@ -9,6 +9,7 @@
 # MODIFIED: [V44.40 엣지 케이스 방어] V14_VWAP 당일 물량 역산 필터링 및 스냅샷 영구 박제(Failsafe) 강제 호출 로직 이식 완료.
 # MODIFIED: [V44.44 이벤트 루프 교착 방어] is_market_open 동기 함수 비동기 래핑 및 타임아웃 Fail-Open 족쇄 체결 완료.
 # NEW: [V44.45 잭팟 데드존 방어] 장막판 스윕 구간에서 잭팟 돌파 시 VWAP 분할 매도를 차단하던 환각 방어막 철거. 정상적으로 1분 슬라이싱 타격을 병행하도록 교정 완료.
+# NEW: [V44.46 달력 API 교착 원천 소각] 스케줄러 내부에서 스레드를 기절시키던 mcal 동기 호출을 비동기 래핑으로 100% 격리하여 장막판 타임아웃 패러독스 영구 차단.
 # ==========================================================
 import logging
 import datetime
@@ -25,7 +26,6 @@ import tempfile
 from scheduler_core import is_market_open
 
 async def scheduled_vwap_init_and_cancel(context):
-    # 🚨 MODIFIED: [V44.44 이벤트 루프 교착 방어] 무거운 I/O 동기 함수를 비동기 스레드로 격리하고 10초 타임아웃 족쇄 체결
     try:
         is_open = await asyncio.wait_for(asyncio.to_thread(is_market_open), timeout=10.0)
     except asyncio.TimeoutError:
@@ -39,11 +39,18 @@ async def scheduled_vwap_init_and_cancel(context):
     est = ZoneInfo('America/New_York')
     now_est = datetime.datetime.now(est)
     
-    try:
+    # 🚨 NEW: [V44.46 달력 API 교착 원천 소각] 동기 달력 연산 비동기 래핑
+    def _get_market_close():
         nyse = mcal.get_calendar('NYSE')
-        schedule = nyse.schedule(start_date=now_est.date(), end_date=now_est.date())
+        return nyse.schedule(start_date=now_est.date(), end_date=now_est.date())
+
+    try:
+        schedule = await asyncio.wait_for(asyncio.to_thread(_get_market_close), timeout=10.0)
         if schedule.empty: return
         market_close = schedule.iloc[0]['market_close'].astimezone(est)
+    except asyncio.TimeoutError:
+        logging.error("⚠️ 장마감시간 달력 API 타임아웃. 16:00 강제 세팅.")
+        market_close = now_est.replace(hour=16, minute=0, second=0, microsecond=0)
     except Exception:
         market_close = now_est.replace(hour=16, minute=0, second=0, microsecond=0)
         
@@ -131,7 +138,6 @@ async def scheduled_vwap_init_and_cancel(context):
 
 
 async def scheduled_vwap_trade(context):
-    # 🚨 MODIFIED: [V44.44 이벤트 루프 교착 방어] 무거운 I/O 동기 함수를 비동기 스레드로 격리하고 10초 타임아웃 족쇄 체결
     try:
         is_open = await asyncio.wait_for(asyncio.to_thread(is_market_open), timeout=10.0)
     except asyncio.TimeoutError:
@@ -149,11 +155,18 @@ async def scheduled_vwap_trade(context):
         logging.warning("⚠️ [vwap_trade] tx_lock 미초기화. 이번 사이클 스킵.")
         return
         
-    try:
+    # 🚨 NEW: [V44.46 달력 API 교착 원천 소각] 동기 달력 연산 비동기 래핑
+    def _get_market_close():
         nyse = mcal.get_calendar('NYSE')
-        schedule = nyse.schedule(start_date=now_est.date(), end_date=now_est.date())
+        return nyse.schedule(start_date=now_est.date(), end_date=now_est.date())
+
+    try:
+        schedule = await asyncio.wait_for(asyncio.to_thread(_get_market_close), timeout=10.0)
         if schedule.empty: return
         market_close = schedule.iloc[0]['market_close'].astimezone(est)
+    except asyncio.TimeoutError:
+        logging.error("⚠️ 장마감시간 달력 API 타임아웃. 16:00 강제 세팅.")
+        market_close = now_est.replace(hour=16, minute=0, second=0, microsecond=0)
     except Exception:
         market_close = now_est.replace(hour=16, minute=0, second=0, microsecond=0)
         
@@ -261,8 +274,6 @@ async def scheduled_vwap_trade(context):
                             await asyncio.sleep(1.0)
                         except Exception as e:
                             logging.error(f"🚨 자가 치유 Nuke 실패: {e}", exc_info=True)
-                            # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
-                            # vwap_cache Nuke 상태를 False로 리셋해야 다음 1분봉에서 재시도가 가능함 (EC-1 교정 완료)
                             vwap_cache[f"REV_{t}_nuked"] = False
                             continue
 
@@ -311,9 +322,6 @@ async def scheduled_vwap_trade(context):
                         
                         cached_plan = strategy_rev.load_daily_snapshot(t)
                         if not cached_plan:
-                            # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
-                            # cached_plan=None일 때 and 단락평가로 is_zero_start=False가 고착된다고 오판하지 말 것.
-                            # 아래 로직은 타임머신 역산을 통해 legacy_q를 도출하여 완벽하게 0주 출발 팩트를 복원하고 있음.
                             today_str_est = now_est.strftime("%Y-%m-%d")
                             legacy_lots = [item for item in q_data if not str(item.get("date", "")).startswith(today_str_est)]
                             legacy_q = sum(int(item.get("qty", 0)) for item in legacy_lots if float(item.get('price', 0.0)) > 0)
@@ -323,7 +331,6 @@ async def scheduled_vwap_trade(context):
                             else:
                                 is_zero_start = (total_q == 0)
                             
-                            # MODIFIED: [V44.40 엣지 케이스 방어] 역산 직후 스냅샷 영구 박제 (V_REV)
                             rev_alloc_cash = float(cfg.get_seed(t) or 0.0) * 0.15
                             strategy_rev.ensure_failsafe_snapshot(
                                 ticker=t, curr_p=curr_p, prev_c=prev_c, alloc_cash=rev_alloc_cash, 
@@ -463,7 +470,7 @@ async def scheduled_vwap_trade(context):
                                             await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
                                             vwap_cache[f"REV_{t}_sweep_skip_msg"] = True
                                             
-                            # MODIFIED: [V44.45 잭팟 데드존 방어] 과잉 방어막 도려내기. 잭팟 달성 시 VWAP 분할 매도를 차단하던 환각 맹점 철거. 스윕이 발생했을 때만 하위 VWAP을 건너뛰도록 교정.
+                            # MODIFIED: [V44.45 잭팟 데드존 방어] 과잉 방어막 도려내기.
                             if target_sweep_qty > 0:
                                 continue 
                         
@@ -591,7 +598,6 @@ async def scheduled_vwap_trade(context):
                         if not cached_snap_v14:
                             ledger_qty = 0
                             try:
-                                # MODIFIED: [V44.40 엣지 케이스 방어] V14_VWAP 0주 역산 필터링
                                 today_str_est = now_est.strftime("%Y-%m-%d")
                                 recs = [r for r in cfg.get_ledger() if r['ticker'] == t and not str(r.get("date", "")).startswith(today_str_est)]
                                 ledger_qty, _, _, _ = cfg.calculate_holdings(t, recs)
@@ -602,7 +608,6 @@ async def scheduled_vwap_trade(context):
                                 pure_qty_v14 = 0 
                                 logging.warning(f"🚨 [{t}] V14_VWAP 스냅샷 증발! 메인 장부 역산 결과 0주 새출발 팩트 복원 완료.")
                             
-                            # MODIFIED: [V44.40 엣지 케이스 방어] 역산 직후 스냅샷 영구 박제 (V14)
                             _, v14_alloc_cash, _ = cfg.calculate_v14_state(t)
                             v14_vwap_plugin.ensure_failsafe_snapshot(
                                 ticker=t, current_price=curr_p, total_qty=actual_qty, 

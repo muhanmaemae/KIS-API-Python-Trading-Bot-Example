@@ -1,5 +1,5 @@
 # ==========================================================
-# [scheduler_sniper.py] - 🌟 100% 분할 캡슐화 완성본 (V44.40) 🌟
+# [scheduler_sniper.py] - 🌟 100% 분할 캡슐화 완성본 (V44.45) 🌟
 # 🚨 MODIFIED: [V32.00 그랜드 수술] 불필요한 AVWAP 동적 파라미터 배선 전면 소각 및 클린 라우팅 적용
 # NEW: [V40.XX 옴니 매트릭스] 전역 국면 데이터(regime_data) 수신 및 스나이퍼(AVWAP/V14) 듀얼 라우팅 락온 탑재
 # 🚨 MODIFIED: [V41.XX 파격적 수술] AVWAP 쿨다운 및 손절 셧다운 동결 전면 소각 & 무제한 다중 타격 룰 이식
@@ -12,6 +12,7 @@
 # 🚨 MODIFIED: [V44.35 AVWAP 하드스탑 및 조기퇴근 셧다운 오버라이드 수술] reason 텍스트에 포함된 조기퇴근 및 HARD_STOP 플래그를 scheduler가 무시하고 False로 덮어쓰던 하극상 맹점 원천 차단. 팩트 기반 영구 동결(Shutdown) 락온 이식 완료.
 # MODIFIED: [V44.40 엣지 케이스 방어] AVWAP 및 스나이퍼 교착 방어, 조기퇴근 셧다운 오버라이드 및 V14 예산 중복 방어 이식.
 # MODIFIED: [V44.44 이벤트 루프 교착 방어] is_market_open 동기 함수 비동기 래핑 및 타임아웃 Fail-Open 족쇄 체결 완료.
+# NEW: [V44.45 달력 API 교착 원천 소각] 스케줄러 내부에서 스레드를 기절시키던 mcal 동기 호출을 비동기 래핑으로 100% 격리하여 17시 스케줄러 증발 패러독스 영구 차단.
 # ==========================================================
 import logging
 import datetime
@@ -28,7 +29,6 @@ import pandas_market_calendars as mcal
 from scheduler_core import is_market_open
 
 async def scheduled_sniper_monitor(context):
-    # 🚨 MODIFIED: [V44.44 이벤트 루프 교착 방어] 무거운 I/O 동기 함수를 비동기 스레드로 격리하고 10초 타임아웃 족쇄 체결
     try:
         is_open = await asyncio.wait_for(asyncio.to_thread(is_market_open), timeout=10.0)
     except asyncio.TimeoutError:
@@ -46,13 +46,23 @@ async def scheduled_sniper_monitor(context):
         logging.warning("⚠️ [sniper_monitor] tx_lock 미초기화. 이번 사이클 스킵.")
         return
     
-    try:
+    # 🚨 NEW: [V44.45 달력 API 교착 원천 소각] 동기 달력 연산 비동기 래핑
+    def _get_market_hours():
         nyse = mcal.get_calendar('NYSE')
-        schedule = nyse.schedule(start_date=now_est.date(), end_date=now_est.date())
+        return nyse.schedule(start_date=now_est.date(), end_date=now_est.date())
+
+    try:
+        schedule = await asyncio.wait_for(asyncio.to_thread(_get_market_hours), timeout=10.0)
         if schedule.empty: return
         
         market_open = schedule.iloc[0]['market_open'].astimezone(est)
         market_close = schedule.iloc[0]['market_close'].astimezone(est)
+    except asyncio.TimeoutError:
+        logging.error("⚠️ 장운영시간 달력 API 타임아웃. 평일 강제 시간 세팅.")
+        if now_est.weekday() < 5:
+            market_open = now_est.replace(hour=9, minute=30, second=0, microsecond=0)
+            market_close = now_est.replace(hour=16, minute=0, second=0, microsecond=0)
+        else: return
     except Exception:
         if now_est.weekday() < 5:
             market_open = now_est.replace(hour=9, minute=30, second=0, microsecond=0)
@@ -116,7 +126,6 @@ async def scheduled_sniper_monitor(context):
                             except Exception: pass
                         if _now_est.time() < datetime.time(15, 27):
                             virtual_locked_budget += max(0.0, rev_daily_budget - spent)
-                    # MODIFIED: [V44.40 엣지 케이스 방어] V14 예산 중복 방어
                     elif cfg.get_version(tk) == "V14":
                         _, dynamic_budget, _ = cfg.calculate_v14_state(tk)
                         virtual_locked_budget += dynamic_budget
@@ -216,7 +225,7 @@ async def scheduled_sniper_monitor(context):
                             atr5 = float(res_atr[0]) if not isinstance(res_atr, Exception) and res_atr else 0.0
                         except Exception as e:
                             logging.debug(f"AVWAP 파라미터 병렬 스캔 실패: {e}")
-                        
+                            
                         avwap_state_dict = {
                             "strikes": tracking_cache.get(f"AVWAP_STRIKES_{current_target}", 0)
                         }
@@ -260,7 +269,6 @@ async def scheduled_sniper_monitor(context):
                                     await asyncio.sleep(2.0)
                             
                                 if has_unfilled:
-                                    # MODIFIED: [V44.40 엣지 케이스 방어] AVWAP 교착 방어 (매수)
                                     await asyncio.to_thread(broker.cancel_targeted_orders, current_target, "02", "00")
                                     await asyncio.sleep(1.0)
                                     continue
@@ -342,7 +350,6 @@ async def scheduled_sniper_monitor(context):
                                     await asyncio.sleep(2.0)
                                 
                                 if has_unfilled:
-                                    # MODIFIED: [V44.40 엣지 케이스 방어] AVWAP 교착 방어 (매도)
                                     await asyncio.to_thread(broker.cancel_targeted_orders, current_target, "01", "00")
                                     await asyncio.sleep(1.0)
                                     continue
@@ -379,7 +386,6 @@ async def scheduled_sniper_monitor(context):
                                         
                                         shutdown_flag = tracking_cache.get(f"AVWAP_SHUTDOWN_{current_target}", False)
                                         
-                                        # 🚨 MODIFIED: [V44.35 AVWAP 하드스탑 및 조기퇴근 셧다운 오버라이드 수술] 
                                         if new_qty == 0:
                                             strikes = tracking_cache.get(f"AVWAP_STRIKES_{current_target}", 0) + 1
                                             tracking_cache[f"AVWAP_STRIKES_{current_target}"] = strikes
@@ -396,16 +402,15 @@ async def scheduled_sniper_monitor(context):
                                             else:
                                                 msg += f"\n🛡️ <b>[ {strikes}회차 출장 익절 완료 ]</b> 즉각 다음 모멘텀 타점 탐색을 시작합니다."
                                                 shutdown_flag = False
-                                                
+                                            
                                             new_avg = 0.0
                                             avwap_free_cash += (ccld_qty * exec_price)
                                         else:
                                             msg += f"\n⚠️ 잔량 {new_qty}주 발생 (미체결 강제 취소됨, 다음 1분봉 루프에서 재시도)"
                                             
-                                            # MODIFIED: [V44.40 엣지 케이스 방어] 조기퇴근 셧다운 오버라이드
                                             if any(k in reason for k in ["조기퇴근", "HARD_STOP", "손절", "TIME_STOP"]):
                                                 shutdown_flag = True
-                                                
+                                            
                                             new_avg = tracking_cache.get(f"AVWAP_AVG_{current_target}", 0.0)
 
                                         await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
@@ -468,7 +473,6 @@ async def scheduled_sniper_monitor(context):
                             await asyncio.sleep(2.0)
                         
                         if has_unfilled:
-                            # MODIFIED: [V44.40 엣지 케이스 방어] 일반 스나이퍼 교착 방어 (매수)
                             await asyncio.to_thread(broker.cancel_targeted_orders, t, "02", "00")
                             await asyncio.sleep(1.0)
                             continue
@@ -561,7 +565,6 @@ async def scheduled_sniper_monitor(context):
                             await asyncio.sleep(2.0)
                         
                         if has_unfilled:
-                            # MODIFIED: [V44.40 엣지 케이스 방어] 일반 스나이퍼 교착 방어 (매도)
                             await asyncio.to_thread(broker.cancel_targeted_orders, t, "01", "00")
                             await asyncio.sleep(1.0)
                             continue
