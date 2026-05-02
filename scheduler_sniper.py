@@ -1,8 +1,9 @@
 # ==========================================================
-# [scheduler_sniper.py] - 🌟 100% 분할 캡슐화 완성본 (V44.47) 🌟
+# [scheduler_sniper.py] - 🌟 100% 분할 캡슐화 완성본 (V44.48) 🌟
 # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
 # 제1헌법: queue_ledger.get_queue 등 모든 파일 I/O 및 락 점유 메서드는 무조건 asyncio.to_thread로 래핑하여 이벤트 루프 교착(Deadlock)을 원천 차단함.
 # MODIFIED: [V44.47 이벤트 루프 데드락 영구 소각] 동기식 블로킹 호출 전면 비동기 래핑 완료.
+# MODIFIED: [V44.48 런타임 즉사 방어] SHUTDOWN 분기문 들여쓰기(Indentation) 붕괴 교정 및 SyntaxError 영구 소각.
 # ==========================================================
 import logging
 import datetime
@@ -426,18 +427,18 @@ async def scheduled_sniper_monitor(context):
                                         }
                                         await asyncio.to_thread(strategy.v_avwap_plugin.save_state, current_target, now_est, state_data)
 
-                    elif action == "SHUTDOWN":
-                        if not tracking_cache.get(f"AVWAP_SHUTDOWN_{current_target}"):
-                            tracking_cache[f"AVWAP_SHUTDOWN_{current_target}"] = True
-                            state_data = {
-                                "bought": tracking_cache.get(f"AVWAP_BOUGHT_{current_target}", False),
-                                "shutdown": True,
-                                "qty": tracking_cache.get(f"AVWAP_QTY_{current_target}", 0),
-                                "avg_price": tracking_cache.get(f"AVWAP_AVG_{current_target}", 0.0)
-                            }
-                            await asyncio.to_thread(strategy.v_avwap_plugin.save_state, current_target, now_est, state_data)
-                            msg = f"🛡️ <b>[AVWAP] 암살자 작전 영구 셧다운(동결)</b>\n▫️ 타겟: {current_target}\n▫️ 사유: {reason}"
-                            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
+                        elif action == "SHUTDOWN":
+                            if not tracking_cache.get(f"AVWAP_SHUTDOWN_{current_target}"):
+                                tracking_cache[f"AVWAP_SHUTDOWN_{current_target}"] = True
+                                state_data = {
+                                    "bought": tracking_cache.get(f"AVWAP_BOUGHT_{current_target}", False),
+                                    "shutdown": True,
+                                    "qty": tracking_cache.get(f"AVWAP_QTY_{current_target}", 0),
+                                    "avg_price": tracking_cache.get(f"AVWAP_AVG_{current_target}", 0.0)
+                                }
+                                await asyncio.to_thread(strategy.v_avwap_plugin.save_state, current_target, now_est, state_data)
+                                msg = f"🛡️ <b>[AVWAP] 암살자 작전 영구 셧다운(동결)</b>\n▫️ 타겟: {current_target}\n▫️ 사유: {reason}"
+                                await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='HTML')
 
                 master_switch = await asyncio.to_thread(getattr(cfg, 'get_master_switch', lambda x: "ALL"), t)
                 sniper_buy_locked = await asyncio.to_thread(getattr(cfg, 'get_sniper_buy_locked', lambda x: False), t)
