@@ -7,6 +7,7 @@
 # NEW: [2단계 수술] cmd_add_q 및 cmd_clear_q 내부에 존재하던 낡은 hasattr(self.queue_ledger, '_load') 찌꺼기 100% 영구 소각.
 # 🚨 MODIFIED: [V44.49 cmd_sync 이벤트 루프 교착 방어] 통합 지시서 렌더링 시 발생하는 모든 파일 I/O 스캔 작업 비동기 래핑 완료.
 # 🚨 MODIFIED: [맹점 4 수술] 텔레그램 명령어 호출 시 발생하는 모든 동기 I/O(cfg 속성 조회) 전면 비동기 래핑 완료.
+# 🚨 MODIFIED: [NameError 픽스] ticker_data_list 매핑 시 safe_seed 변수명 불일치 런타임 에러 팩트 교정 완료.
 # ==========================================================
 import logging
 import datetime
@@ -780,7 +781,7 @@ class TelegramController:
                     elif curr_time >= time_1500:
                         avwap_status_txt = "⛔ 금일 감시 종료"
 
-            # 🚨 MODIFIED: [V44.49] 속성 조회 비동기 래핑 변수 통합
+            # 🚨 MODIFIED: [V44.49] 속성 조회 비동기 래핑 변수 통합 및 맹점 4 교정
             upward_sniper_mode_on = await asyncio.to_thread(self.cfg.get_upward_sniper_mode, t)
             target_val = await asyncio.to_thread(self.cfg.get_target_profit, t)
             escrow_val = await asyncio.to_thread(self.cfg.get_escrow_cash, t)
@@ -794,7 +795,7 @@ class TelegramController:
                 'profit_pct': (curr - actual_avg) / actual_avg * 100 if actual_avg > 0 else 0,
                 'upward_sniper': "ON" if upward_sniper_mode_on else "OFF",
                 'target': target_val, 'star_pct': round(plan.get('star_ratio', 0) * 100, 2) if 'star_ratio' in plan else 0.0,
-                'seed': safe_seed, 'one_portion': plan.get('one_portion', 0.0), 'plan': plan,
+                'seed': seed, 'one_portion': plan.get('one_portion', 0.0), 'plan': plan,
                 'is_locked': is_already_ordered, 'mode': "REG",
                 'is_reverse': is_rev, 'star_price': plan.get('star_price', 0.0),
                 'escrow': escrow_val,
