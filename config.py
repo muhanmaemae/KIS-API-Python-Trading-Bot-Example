@@ -1,25 +1,7 @@
 # ==========================================================
-# [config.py] - 🌟 100% 통합 완성본 🌟
-# ⚠️ V_REV 도입에 따른 P매매 잔재 완벽 소각 버전
-# 💡 [V24.10 수술] 동적 에스크로 락다운 깃발(Flag) 제어 로직 추가
-# 💡 [V25.00 수술] AVWAP 하이브리드 전술 상태 저장(캐싱) 파일 경로 및 함수 이식
-# 🚨 [V25.19 핫픽스] 빈 장부 스캔 시 IndexError 런타임 붕괴 완벽 방어
-# 🚨 [V25.19 핫픽스] 에스크로(Escrow) 3대 관리 함수(set/add/clear) 팩트 기반 완전 구현
-# 🚀 [V26.00 승격] 수동 VWAP 시그널 모드(Manual Mode) 독립 플래그 및 캐싱 엔진 신설 탑재
-# 🚀 [V26.07 확정 순수익 렌더링 패치] 명예 전당 및 졸업 카드 발급 시 왕복 수수료(0.5%) 완벽 차감
-# 🚨 [V27.10 그랜드 수술] 에스크로 캐시 영구 박제, 액면분할 수학적 반올림(Banker's Rounding) 오류 교정
-# 🚨 [V27.11 핫픽스] I/O FD 누수 방어, TOCTOU 경쟁 상태 원천 차단 래퍼 추가
-# MODIFIED: [V28.25 그랜드 수술] 수수료 하드코딩 전면 소각 및 동적 수수료(Fee) 설정 엔진 탑재
-# MODIFIED: [V28.26 타임존 락온] KST 기준 날짜 연산을 전면 폐기하고, EST(미국 동부)로 100% 형변환
-# MODIFIED: [V29.16 핫픽스] 마스터 스위치 및 스나이퍼 락온(Buy/Sell) 영속성 Getter/Setter 이식
-# MODIFIED: [V30.09 핫픽스] pytz 영구 적출 및 ZoneInfo 도입으로 LMT 버그 차단
-# 🚨 MODIFIED: [V32.00 그랜드 수술] 12차 백테스트 팩트 락온. 불필요해진 AVWAP 조기퇴근/동적갭 파라미터 저장소 완전 소각.
-# NEW: [V40.XX 옴니 매트릭스] SOXL/SOXS 양방향 듀얼 모멘텀 플러그인 연동 및 390분 U-Curve 엔진 탑재
-# 🚨 MODIFIED: [V42.00 아키텍처 개편] SOXS 메인 장부 전면 폐기. 오리지널(SOXL, TQQQ) 및 V-REV(SOXL 전용) 2대 트리 구조 확립.
-# 🚨 MODIFIED: [V42.02 핫픽스] 로컬 캐시 오염 방어. active_tickers 반환 시 SOXS 강제 필터링 적출 적용.
-# 🚨 MODIFIED: [V43.00 작전 통제실 복구] AVWAP 사용자가 설정하는 커스텀 목표 수익률(TARGET) 저장소 복원 수술 완료.
-# 🚨 MODIFIED: [V44.08 팩트 교정] get_vwap_profile 함수를 ConfigManager 내부 메서드로 편입시켜 hasattr 파이프라인 누수 100% 원천 차단 완료
+# FILE: config.py (수술 완료)
 # ==========================================================
+
 import json
 import os
 import datetime
@@ -53,7 +35,7 @@ class ConfigManager:
         self.FILES = {
             "TOKEN": "data/token.dat",
             "CHAT_ID": "data/chat_id.dat",
-            "LEDGER": "data/manual_ledger.json",    
+            "LEDGER": "data/manual_ledger.json", 
             "HISTORY": "data/manual_history.json",  
             "SPLIT": "data/split_config.json",
             "TICKER": "data/active_tickers.json",
@@ -74,7 +56,7 @@ class ConfigManager:
             "SNIPER_BUY_LOCKED": "data/sniper_buy_locked.json",
             "SNIPER_SELL_LOCKED": "data/sniper_sell_locked.json",
             "AVWAP_MULTI_STRIKE_CFG": "data/avwap_multi_strike.json", 
-            "AVWAP_TARGET_CFG": "data/avwap_target.json", # 🚨 V43.00 복구된 커스텀 수익률 메모리
+            "AVWAP_TARGET_CFG": "data/avwap_target.json", 
             "VREV_GAP_SWITCH_CFG": "data/vrev_gap_switch.json",       
             "VREV_GAP_THRESH_CFG": "data/vrev_gap_thresh.json"        
         }
@@ -86,12 +68,11 @@ class ConfigManager:
         self.DEFAULT_COMPOUND = {"SOXL": 70.0, "TQQQ": 70.0}
         self.DEFAULT_SNIPER_MULTIPLIER = {"SOXL": 1.0, "TQQQ": 0.9}
         self.DEFAULT_FEE = {"SOXL": 0.25, "TQQQ": 0.25} 
-        self.DEFAULT_AVWAP_TARGET = {"SOXL": 4.0, "SOXS": 4.0} # 🚨 기본 4.0%
+        self.DEFAULT_AVWAP_TARGET = {"SOXL": 4.0, "SOXS": 4.0}
         
         self._escrow_cache = {}
         self._locks_mutex = threading.Lock()
 
-    # 🚨 MODIFIED: [V44.08 팩트 교정] 클래스 외부 독립 함수였던 get_vwap_profile을 클래스 내부 메서드로 편입하여 hasattr 파이프라인 누수 완벽 방어
     def get_vwap_profile(self, ticker: str) -> dict:
         target_ticker = ticker.upper()
         if target_ticker not in VWAP_PROFILES or not VWAP_PROFILES[target_ticker]:
@@ -506,9 +487,7 @@ class ConfigManager:
         d[ticker] = {"is_active": is_active, "day_count": day_count, "exit_target": exit_target, "last_update_date": last_update_date}
         self._save_json(self.FILES["REVERSE_CFG"], d)
 
-    def update_reverse_day_if_needed(self, ticker):
-        pass
-
+    # MODIFIED: [V44.49 달력 API 중복 연산 데드코드 전면 소각 및 스레드 교착 원천 차단]
     def increment_reverse_day(self, ticker):
         state = self.get_reverse_state(ticker)
         if state.get("is_active"):
@@ -517,22 +496,9 @@ class ConfigManager:
             today_est_str = now_est.strftime('%Y-%m-%d')
             
             if state.get("last_update_date") != today_est_str:
-                is_trading_day = False
-                try:
-                    nyse = mcal.get_calendar('NYSE')
-                    schedule = nyse.schedule(start_date=now_est.date(), end_date=now_est.date())
-                    is_trading_day = not schedule.empty
-                except Exception as e:
-                    print(f"⚠️ [Config] 달력 라이브러리 에러 발생. 평일 강제 개장 처리합니다: {e}")
-                    is_trading_day = now_est.weekday() < 5
-                
-                if is_trading_day:
-                    new_day = state.get("day_count", 0) + 1
-                    self.set_reverse_state(ticker, True, new_day, state.get("exit_target", 0.0), today_est_str)
-                    return True
-                else:
-                    self.set_reverse_state(ticker, True, state.get("day_count", 0), state.get("exit_target", 0.0), today_est_str)
-                    return False
+                new_day = state.get("day_count", 0) + 1
+                self.set_reverse_state(ticker, True, new_day, state.get("exit_target", 0.0), today_est_str)
+                return True
         return False
 
     def calculate_v14_state(self, ticker):
@@ -574,7 +540,7 @@ class ConfigManager:
                     
         avg_price = total_invested / holdings if holdings > 0 else 0.0
         t_val = (holdings * avg_price) / base_portion if base_portion > 0 else 0.0
-            
+             
         if holdings > 0:
             safe_denom = max(1.0, split - t_val)
             current_budget = rem_cash / safe_denom
@@ -731,7 +697,6 @@ class ConfigManager:
         d[ticker] = bool(v)
         self._save_json(self.FILES["MANUAL_VWAP_CFG"], d)
 
-    # 🚨 [V43.00 복원] 근무 모드 (다중 출장 vs 조기 퇴근) 
     def get_avwap_multi_strike_mode(self, ticker): 
         return self._load_json(self.FILES.get("AVWAP_MULTI_STRIKE_CFG", "data/avwap_multi_strike.json"), {}).get(ticker, False)
         
@@ -740,7 +705,6 @@ class ConfigManager:
         d[ticker] = bool(v)
         self._save_json(self.FILES.get("AVWAP_MULTI_STRIKE_CFG", "data/avwap_multi_strike.json"), d)
 
-    # 🚨 [V43.00 복원] AVWAP 커스텀 목표 수익률(Target Profit)
     def get_avwap_target_profit(self, ticker): 
         return float(self._load_json(self.FILES.get("AVWAP_TARGET_CFG", "data/avwap_target.json"), self.DEFAULT_AVWAP_TARGET).get(ticker, 4.0))
         
