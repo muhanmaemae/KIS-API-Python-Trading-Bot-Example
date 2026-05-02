@@ -11,6 +11,7 @@
 # 🚨 MODIFIED: [V42.16 핫픽스] pytz 영구 적출 및 ZoneInfo 락온 (ModuleNotFoundError 런타임 붕괴 방어)
 # 🚨 MODIFIED: [V44.52 휴일 락다운 해제 수술] 주말(토, 일) 및 휴장일에는 시계(14:55~16:10)를 무시하고 무조건 업데이트를 허용하는 달력 팩트 스캔 엔진(Bypass) 이식 완료.
 # 🚨 MODIFIED: [V44.53 제1헌법 및 16계명 절대 락온] 달력 API(mcal) 스캔을 비동기(to_thread) 래핑하고 5초 타임아웃(Fail-Open)을 강제하여 이벤트 루프 교착(Deadlock) 원천 차단.
+# 🚨 MODIFIED: [V44.55 데몬 셧다운 교착(Zombie) 영구 소각] OS systemctl 의존성 철거 및 하드 킬(Self-Kill) 엔진 이식 완료.
 # ==========================================================
 import logging
 import asyncio
@@ -137,9 +138,9 @@ class SystemUpdater:
     # 🚨 [제1헌법 준수] 동기 함수 의존성 해결을 위해 async 격상
     async def restart_daemon(self):
         """
-        GCP 리눅스 OS에 데몬 재가동 명령을 하달합니다.
-        격발 즉시 봇 프로세스가 SIGTERM 신호를 받고 종료되므로,
-        반드시 텔레그램 보고 메시지를 선행 발송한 후 호출해야 합니다.
+        GCP 리눅스 OS에 데몬 재가동 명령을 하달하는 대신,
+        파이썬 프로세스를 즉각 폭파(Hard Kill)시킵니다.
+        systemd의 Restart=always 속성이 즉시 봇을 부활시킵니다.
         """
         # 🚨 [비동기 래핑 대응] await 추가
         allowed, _ = await self.is_update_allowed()
@@ -148,14 +149,12 @@ class SystemUpdater:
             return False
 
         try:
-            logging.info(f"🔄 [Updater] OS 쉘에 {self.daemon_name} 데몬 재가동 명령을 하달합니다.")
+            logging.info(f"🔄 [Updater] 좀비 셧다운 방어를 위해 파이썬 프로세스를 즉시 자폭(Hard Kill)시킵니다. (systemd가 부활시킴)")
             
-            subprocess.Popen(
-                ["sudo", "systemctl", "restart", self.daemon_name],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            # MODIFIED: [V44.55] sudo systemctl 의존성 영구 철거 및 즉각 셧다운(os._exit) 타격
+            os._exit(0)
+            
             return True
         except Exception as e:
-            logging.error(f"🚨 [Updater] 데몬 재가동 명령 하달 실패: {e}")
+            logging.error(f"🚨 [Updater] 데몬 자폭 명령 하달 실패: {e}")
             return False
