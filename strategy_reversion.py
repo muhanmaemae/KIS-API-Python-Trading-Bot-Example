@@ -2,6 +2,7 @@
 # MODIFIED: [V44.25 예산 탈취(Stealing) 런타임 붕괴 방어막 이식] Buy1이 Buy2의 미사용 예산을 훔쳐와 무한 타격(34주 체결 등)하는 차원 붕괴를 영구 소각.
 # MODIFIED: [V44.25 AVWAP 디커플링] VWAP 기상 전 스냅샷 2중 교차 검증(Fail-Safe) 및 암살자 물량(AVWAP) 100% 격리(Decoupling) 파이프라인 이식 완료.
 # MODIFIED: [V44.36 큐 장부 vs 브로커 실잔고 불일치 팩트 스캔] 페일세이프 스냅샷 복원 시 KIS 순수 본대 수량과 큐 장부 이월 수량 간의 팩트 불일치가 발생할 경우 명시적으로 경고를 타전하여 CALIB 보정을 유도하도록 감시망(EC-3) 이식 완료.
+# MODIFIED: [V44.48 런타임 붕괴 방어] 들여쓰기 붕괴(IndentationError) 완벽 교정.
 # ==========================================================
 # FILE: strategy_reversion.py
 # ==========================================================
@@ -12,8 +13,6 @@ import tempfile
 import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-
-# MODIFIED: [3단계 파이프라인 누수 수술] 최상단의 vwap_data 하드코딩 임포트 구문 전면 소각 완료.
 
 class ReversionStrategy:
     def __init__(self):
@@ -225,7 +224,6 @@ class ReversionStrategy:
                 legacy_q = sum(int(item.get("qty", 0)) for item in legacy_lots)
                 is_zero_start_session = (legacy_q == 0)
 
-        # MODIFIED: [3단계 파이프라인 누수 수술] 하드코딩된 VWAP_PROFILES 딕셔너리 참조를 소각하고 ConfigManager의 동적 로더(get_vwap_profile)로 배선 교정 완료.
         try:
             profile = getattr(self, 'cfg').get_vwap_profile(ticker) if hasattr(self, 'cfg') and hasattr(self.cfg, 'get_vwap_profile') else {}
         except Exception as e:
@@ -334,7 +332,7 @@ class ReversionStrategy:
                         if (q2 + n) > 0:
                             grid_p2 = round(b2_budget / (q2 + n), 2)
                             if grid_p2 >= 0.01 and grid_p2 < p2_trigger:
-                                 orders.append({"side": "BUY", "qty": 1, "price": grid_p2})
+                                orders.append({"side": "BUY", "qty": 1, "price": grid_p2})
                 
             rem_qty_total = max(0, int(total_q) - int(self.executed["SELL_QTY"].get(ticker, 0)))
             if rem_qty_total > 0:
@@ -344,7 +342,7 @@ class ReversionStrategy:
                     available_l1 = min(l1_qty, rem_qty_total)
                     l1_queued = 0
                     if available_l1 > 0 and curr_p >= trigger_l1:
-                         orders.append({"side": "SELL", "qty": available_l1, "price": trigger_l1})
+                        orders.append({"side": "SELL", "qty": available_l1, "price": trigger_l1})
                         l1_queued = available_l1
                         
                     available_upper = min(upper_qty, rem_qty_total - l1_queued)
@@ -407,7 +405,7 @@ class ReversionStrategy:
                     alloc_q2 = int(math.floor(b2_budget_slice / curr_p))
                     self.residual["BUY2"][ticker] = b2_bucket - (alloc_q2 * curr_p)
                     if alloc_q2 > 0:
-                         orders.append({"side": "BUY", "qty": alloc_q2, "price": p2_trigger})
+                        orders.append({"side": "BUY", "qty": alloc_q2, "price": p2_trigger})
                 else:
                     self.residual["BUY2"][ticker] = b2_bucket
             else:
