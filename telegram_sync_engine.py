@@ -4,6 +4,7 @@
 # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
 # 제1헌법: queue_ledger.get_queue 등 모든 파일 I/O 및 락 점유 메서드는 무조건 asyncio.to_thread로 래핑하여 이벤트 루프 교착(Deadlock)을 원천 차단함.
 # MODIFIED: [V44.47 이벤트 루프 데드락 영구 소각] 동기식 블로킹 호출(장부 I/O, JSON 파싱) 전면 비동기 래핑 및 Atomic Write 적용 완료.
+# MODIFIED: [V44.48 데드코드 소각] 클래스 내부에 잔존하는 _verify_and_update_queue 메서드 전체 100% 영구 소각.
 # ==========================================================
 import logging
 import datetime
@@ -388,7 +389,8 @@ class TelegramSyncEngine:
                                         tot_q = sum(int(float(ex.get('ft_ccld_qty') or '0')) for ex in same_day_sells)
                                         if tot_q > 0:
                                             actual_clear_price = round(tot_amt / tot_q, 4)
-                                            logging.info(f"🔍 [{ticker}] 과거 4일치 광역 스캔 및 최근일({last_sell_dt}) 추출 폴백으로 매도 단가(${actual_clear_price})를 복원했습니다.")
+                        
+                            logging.info(f"🔍 [{ticker}] 과거 4일치 광역 스캔 및 최근일({last_sell_dt}) 추출 폴백으로 매도 단가(${actual_clear_price})를 복원했습니다.")
 
                             if tot_q > vrev_ledger_qty:
                                 missing_qty = tot_q - vrev_ledger_qty
@@ -397,7 +399,7 @@ class TelegramSyncEngine:
                                 temp_invested = sum(float(item.get("qty", 0)) * float(item.get("price", 0)) for item in q_data_before)
                                 temp_avg = temp_invested / vrev_ledger_qty if vrev_ledger_qty > 0 else 0.0
                                 missing_price = temp_avg
-                                
+                            
                                 if buy_execs:
                                     b_tot_amt = sum(int(float(ex.get('ft_ccld_qty') or '0')) * float(ex.get('ft_ccld_unpr3') or '0') for ex in buy_execs)
                                     b_tot_q = sum(int(float(ex.get('ft_ccld_qty') or '0')) for ex in buy_execs)
@@ -419,7 +421,7 @@ class TelegramSyncEngine:
                                             missing_price = round(derived_price, 4)
                                         else:
                                             missing_price = round(b_tot_amt / b_tot_q, 4)
-                                
+                                            
                                 q_data_before.append({
                                     "date": now_est.strftime('%Y-%m-%d %H:%M:%S'),
                                     "qty": missing_qty,
@@ -521,8 +523,7 @@ class TelegramSyncEngine:
                                 try:
                                     img_path = await asyncio.to_thread(
                                         self.view.create_profit_image,
-                                        ticker=ticker, 
-                                        profit=snapshot['realized_pnl'], 
+                                        ticker=ticker, profit=snapshot['realized_pnl'], 
                                         yield_pct=snapshot['realized_pnl_pct'],
                                         invested=snapshot['avg_price'] * snapshot['cleared_qty'], 
                                         revenue=snapshot['clear_price'] * snapshot['cleared_qty'], 
@@ -679,7 +680,7 @@ class TelegramSyncEngine:
                                     if added_seed > 0:
                                         msg += f"\n💸 <b>자동 복리 +${added_seed:,.0f}</b> 이 다음 운용 시드에 완벽하게 추가되었습니다!"
                                     await context.bot.send_message(chat_id, msg, parse_mode='HTML')
-        
+                                    
                                     try:
                                         img_path = await asyncio.to_thread(
                                             self.view.create_profit_image,
@@ -707,43 +708,6 @@ class TelegramSyncEngine:
 
                 await self._sync_escrow_cash(ticker)
                 return "SUCCESS"
-
-    async def _verify_and_update_queue(self, ticker, q_data, context, chat_id):
-        q_file = "data/queue_ledger.json"
-        
-        def _read_all_q(f_path):
-            if os.path.exists(f_path):
-                with open(f_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            return {}
-            
-        all_q = await asyncio.to_thread(_read_all_q, q_file)
-        all_q[ticker] = q_data
-        
-        try:
-            def _write_verify_queue(q_dict, file_path):
-                os.makedirs(os.path.dirname(file_path) or '.', exist_ok=True)
-                fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(file_path) or '.')
-                with os.fdopen(fd, 'w', encoding='utf-8') as f_out:
-                    json.dump(q_dict, f_out, ensure_ascii=False, indent=4)
-                    f_out.flush()
-                    os.fsync(f_out.fileno())
-                os.replace(temp_path, file_path)
-                
-            await asyncio.to_thread(_write_verify_queue, all_q, q_file)
-            
-            if hasattr(self.queue_ledger, 'data'):
-                self.queue_ledger.data = all_q
-            if hasattr(self.queue_ledger, 'queues'):
-                self.queue_ledger.queues = all_q
-                
-        except Exception as e:
-            logging.error(f"🚨 수동 지층 장부 저장 실패: {e}")
-            
-        if ticker not in self.sync_locks:
-            self.sync_locks[ticker] = asyncio.Lock()
-        if not self.sync_locks[ticker].locked():
-            await self.process_auto_sync(ticker, chat_id, context, silent_ledger=False)
 
     async def _display_ledger(self, ticker, chat_id, context, query=None, message_obj=None, pre_fetched_holdings=None):
         full_ledger = await asyncio.to_thread(self.cfg.get_ledger)

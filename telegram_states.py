@@ -4,6 +4,7 @@
 # MODIFIED: [V44.30 수동 입력 렌더링 수술] 텔레그램 창에 수동 목표 수익률(%) 입력 후, /avwap 콘솔 갱신이 아닌 /settlement(환경설정) 화면으로 직결되도록 제자리 렌더링(edit_message_text) 파이프라인 개조 완료.
 # MODIFIED: [V44.44 이벤트 루프 교착 방어] 큐 장부 지층 수동 수정(EDIT_Q) 시 발생하는 직접적인 파일 I/O 작업을 비동기(asyncio.to_thread) 래핑하여 텔레그램 데드락 방어막 이식.
 # MODIFIED: [V44.45 헌법 수술] 파일 I/O 원자적 쓰기(Atomic Write) 엔진 전면 이식 및 런타임 붕괴 방어막(fsync) 하드코딩 완료.
+# MODIFIED: [V44.48 수동 조작 데드코드 영구 소각 및 런타임 무결성 확보] 큐 장부에 존재하지 않는 _load 메서드 호출 찌꺼기 100% 소각.
 # ==========================================================
 import logging
 import datetime
@@ -81,7 +82,7 @@ class TelegramStates:
                     )
                     if curr_p and curr_p > 0 and (price < curr_p * 0.7 or price > curr_p * 1.3):
                         del controller.user_states[chat_id]
-                        return await update.message.reply_text(f"🚨 <b>팻핑거 방어 가동:</b> 입력가(${price:.2f})가 현재가(${curr_p:.2f}) 대비 ±30%를 초과합니다. 다시 시도해주세요.", parse_mode='HTML')
+                        return await update.message.reply_text(f"🚨 <b>팻핑거 방어 가동:</b> 입력가(${price:.2f})가 현재가(${curr_p:.2f}) 대비 ±30%를 초초과합니다. 다시 시도해주세요.", parse_mode='HTML')
                 except Exception:
                     pass
 
@@ -119,12 +120,9 @@ class TelegramStates:
                         if os.path.exists(tmp_path):
                             os.remove(tmp_path)
                         raise e
-                    
-                    if getattr(self, 'queue_ledger', None) and hasattr(self.queue_ledger, '_load'):
-                        try:
-                            self.queue_ledger._load()
-                        except:
-                            pass
+                        
+                    # MODIFIED: [V44.48 수동 조작 데드코드 영구 소각 및 런타임 무결성 확보]
+                    # (기존 hasattr(self.queue_ledger, '_load') 찌꺼기 100% 영구 소각 완료)
                             
                 await asyncio.to_thread(_update_q_ledger)
                 

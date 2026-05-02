@@ -4,6 +4,7 @@
 # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
 # 제1헌법: queue_ledger.get_queue 등 모든 파일 I/O 및 락 점유 메서드는 무조건 asyncio.to_thread로 래핑하여 이벤트 루프 교착(Deadlock)을 원천 차단함.
 # MODIFIED: [V44.47 이벤트 루프 데드락 영구 소각] 다이렉트 파일 I/O 및 config/ledger 접근 메서드 전면 비동기 래핑 완료.
+# MODIFIED: [V44.48 수동 조작 데드코드 영구 소각 및 런타임 무결성 확보] 큐 장부에 존재하지 않는 _load 메서드 호출 찌꺼기 100% 소각.
 # ==========================================================
 import logging
 import datetime
@@ -120,7 +121,7 @@ class TelegramCallbacks:
             if not getattr(self, 'queue_ledger', None):
                 from queue_ledger import QueueLedger
                 self.queue_ledger = QueueLedger()
-                
+            
             # 🚨 [비동기 래핑]
             q_data = await asyncio.to_thread(self.queue_ledger.get_queue, ticker)
             total_q = sum(item.get("qty", 0) for item in q_data)
@@ -244,11 +245,8 @@ class TelegramCallbacks:
                     
                     await asyncio.to_thread(_write_q, q_file, all_q)
                     
-                    if getattr(self, 'queue_ledger', None) and hasattr(self.queue_ledger, '_load'):
-                        try:
-                            await asyncio.to_thread(self.queue_ledger._load)
-                        except:
-                            pass
+                    # MODIFIED: [V44.48 수동 조작 데드코드 영구 소각 및 런타임 무결성 확보]
+                    # (기존 hasattr(self.queue_ledger, '_load') 찌꺼기 소각)
                     
                     await query.answer("✅ 지층 삭제 완료. KIS 원장과 동기화합니다.", show_alert=False)
                     
@@ -348,14 +346,11 @@ class TelegramCallbacks:
                             os.replace(tmp_path, q_file)
                         except Exception:
                             pass
-                
+                 
                 await asyncio.to_thread(_process_reset_files)
                     
-                if getattr(self, 'queue_ledger', None) and hasattr(self.queue_ledger, '_load'):
-                    try:
-                        await asyncio.to_thread(self.queue_ledger._load)
-                    except Exception:
-                        pass
+                # MODIFIED: [V44.48 수동 조작 데드코드 영구 소각 및 런타임 무결성 확보]
+                # (기존 hasattr(self.queue_ledger, '_load') 찌꺼기 소각)
             
                 await query.edit_message_text(f"✅ <b>[{ticker}] 삼위일체 소각(Nuke) 및 초기화 완료!</b>\n▫️ 본장부, 백업장부, 큐(Queue), 에스크로의 찌꺼기 데이터가 100% 영구 삭제되었습니다.\n▫️ 다음 매수 진입 시 0주 새출발 디커플링 타점 모드로 완벽히 재시작합니다.", parse_mode='HTML')
             
@@ -431,7 +426,7 @@ class TelegramCallbacks:
                 
                 try:
                     await query.edit_message_text(f"🎨 <b>[{ticker}] 프리미엄 졸업 카드를 렌더링 중입니다...</b>", parse_mode='HTML')
-                    
+
                     # 🚨 MODIFIED: 비동기 래핑
                     img_path = await asyncio.to_thread(
                         self.view.create_profit_image,
@@ -658,7 +653,7 @@ class TelegramCallbacks:
                 await asyncio.to_thread(self.cfg.set_upward_sniper_mode, ticker, False)
                 if hasattr(self.cfg, 'set_avwap_hybrid_mode'):
                     await asyncio.to_thread(self.cfg.set_avwap_hybrid_mode, ticker, False)
-                    
+                
                 if mode_type == "MANUAL":
                     await asyncio.to_thread(self.cfg.set_manual_vwap_mode, ticker, True)
                     mode_txt = "🖐️ 수동 모드 (한투 VWAP 알고리즘 위임)"

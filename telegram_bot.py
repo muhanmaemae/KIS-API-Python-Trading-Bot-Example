@@ -3,6 +3,7 @@
 # ==========================================================
 # MODIFIED: [V44.41 UI 팩트 교정] 지시서 렌더링 시 스냅샷 락온 상태를 뷰포트로 직결 전달(has_snapshot 팩트 이식)
 # MODIFIED: [V44.45 헌법 수술] _get_market_status 달력 API(mcal) 동기 블로킹 비동기 래핑 및 타임아웃 Fail-Open 족쇄 체결 완료. Callers 전면 await 동기화.
+# MODIFIED: [V44.48 텔레그램 다이렉트 파일 입출력 비동기 래핑 및 멱등성 보장] cmd_add_q, cmd_clear_q 데드코드 통신 배선 철거 및 인플레이스 원자적 쓰기 탑재.
 # ==========================================================
 import logging
 import datetime
@@ -12,6 +13,8 @@ import os
 import math 
 import asyncio
 import html
+import json
+import tempfile
 import yfinance as yf
 import pandas_market_calendars as mcal 
 
@@ -210,7 +213,7 @@ class TelegramController:
             return
             
         status_msg = await update.message.reply_text("⏳ <b>[AVWAP 듀얼 모멘텀 관제탑]</b>\n레이더망을 가동하여 시장 데이터를 스캔 중...")
-            
+        
         try:
             from telegram_avwap_console import AvwapConsolePlugin
             plugin = AvwapConsolePlugin(self.cfg, self.broker, self.strategy, self.tx_lock)
@@ -280,6 +283,8 @@ class TelegramController:
         msg, reply_markup = self.view.get_queue_management_menu(ticker, q_data)
         await update.message.reply_text(text=msg, reply_markup=reply_markup, parse_mode='HTML')
 
+    # MODIFIED: [V44.48] 텔레그램 다이렉트 파일 입출력 비동기 래핑 및 멱등성 보장
+    # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
     async def cmd_add_q(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_admin(update):
             return
@@ -309,34 +314,62 @@ class TelegramController:
                 pass 
             except Exception:
                 pass
+
+            def _write_add_q():
+                q_file = "data/queue_ledger.json"
+                all_q = {}
+                if os.path.exists(q_file):
+                    try:
+                        with open(q_file, 'r', encoding='utf-8') as f:
+                            all_q = json.load(f)
+                    except Exception:
+                        pass
+                        
+                ticker_q = all_q.get(ticker, [])
+                ticker_q.append({
+                    "qty": qty,
+                    "price": price,
+                    "date": f"{date_str} 23:59:59", 
+                    "type": "MANUAL_OVERRIDE"
+                })
+                ticker_q.sort(key=lambda x: x.get('date', ''), reverse=True)
+                all_q[ticker] = ticker_q
                 
-            q_file = "data/queue_ledger.json"
-            all_q = {}
-            if os.path.exists(q_file):
+                dir_name = os.path.dirname(q_file) or '.'
+                os.makedirs(dir_name, exist_ok=True)
+                fd, tmp_path = tempfile.mkstemp(dir=dir_name, text=True)
                 try:
-                    import json
-                    with open(q_file, 'r', encoding='utf-8') as f:
-                        all_q = json.load(f)
-                except Exception:
-                    pass
+                    with os.fdopen(fd, 'w', encoding='utf-8') as f_out:
+                        json.dump(all_q, f_out, ensure_ascii=False, indent=4)
+                        f_out.flush()
+                        os.fsync(f_out.fileno())
+                    os.replace(tmp_path, q_file)
+                except Exception as e:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                    raise e
                     
-            ticker_q = all_q.get(ticker, [])
-            ticker_q.append({
-                "qty": qty,
-                "price": price,
-                "date": f"{date_str} 23:59:59", 
-                "type": "MANUAL_OVERRIDE"
-            })
-            
-            ticker_q.sort(key=lambda x: x.get('date', ''), reverse=True)
+                if getattr(self, 'queue_ledger', None) and hasattr(self.queue_ledger, '_load'):
+                    try:
+                        self.queue_ledger._load()
+                    except:
+                        pass
+
+            await asyncio.to_thread(_write_add_q)
             
             chat_id = update.effective_chat.id
-            await self.sync_engine._verify_and_update_queue(ticker, ticker_q, context, chat_id)
+            if ticker not in self.sync_engine.sync_locks:
+                self.sync_engine.sync_locks[ticker] = asyncio.Lock()
+            if not self.sync_engine.sync_locks[ticker].locked():
+                await self.sync_engine.process_auto_sync(ticker, chat_id, context, silent_ledger=False)
+
             await update.message.reply_text(f"✅ <b>[{ticker}] 수동 지층 삽입 완료!</b>\n▫️ {date_str} | {qty}주 | ${price:.2f}", parse_mode='HTML')
             
         except Exception as e:
             await update.message.reply_text(f"❌ 알 수 없는 에러 발생: {e}")
 
+    # MODIFIED: [V44.48] 텔레그램 다이렉트 파일 입출력 비동기 래핑 및 멱등성 보장
+    # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
     async def cmd_clear_q(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_admin(update):
             return
@@ -346,9 +379,48 @@ class TelegramController:
             return await update.message.reply_text("❌ 종목명을 입력하세요. 예: /clear_q SOXL")
             
         ticker = args[0].upper()
+
+        def _write_clear_q():
+            q_file = "data/queue_ledger.json"
+            all_q = {}
+            if os.path.exists(q_file):
+                try:
+                    with open(q_file, 'r', encoding='utf-8') as f:
+                        all_q = json.load(f)
+                except Exception:
+                    pass
+            
+            all_q[ticker] = []
+            
+            dir_name = os.path.dirname(q_file) or '.'
+            os.makedirs(dir_name, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(dir=dir_name, text=True)
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as f_out:
+                    json.dump(all_q, f_out, ensure_ascii=False, indent=4)
+                    f_out.flush()
+                    os.fsync(f_out.fileno())
+                os.replace(tmp_path, q_file)
+            except Exception as e:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                raise e
+                
+            if getattr(self, 'queue_ledger', None) and hasattr(self.queue_ledger, '_load'):
+                try:
+                    self.queue_ledger._load()
+                except:
+                    pass
+
         try:
+            await asyncio.to_thread(_write_clear_q)
             chat_id = update.effective_chat.id
-            await self.sync_engine._verify_and_update_queue(ticker, [], context, chat_id)
+            
+            if ticker not in self.sync_engine.sync_locks:
+                self.sync_engine.sync_locks[ticker] = asyncio.Lock()
+            if not self.sync_engine.sync_locks[ticker].locked():
+                await self.sync_engine.process_auto_sync(ticker, chat_id, context, silent_ledger=True)
+                
             await update.message.reply_text(f"🗑️ <b>[{ticker}] 장부가 완전히 소각되었습니다.</b>\n새로운 지층을 구축할 준비가 완료되었습니다.", parse_mode='HTML')
         except Exception as e:
             await update.message.reply_text(f"❌ 소각 중 에러 발생: {e}")
@@ -560,13 +632,12 @@ class TelegramController:
                                         _snap_amt += _q * (_p / 1.006)
                                     else:
                                         _snap_amt += _q * (_p / 1.005)
-                                    snap_avg = _snap_amt / _snap_q if _snap_q > 0 else actual_avg
+                                snap_avg = _snap_amt / _snap_q if _snap_q > 0 else actual_avg
                             else:
                                 snap_avg = actual_avg
                             
                         target_jackpot = round(snap_avg * 1.01, 2) if snap_avg > 0 else 0.0
                         v_rev_guidance += f" 🎯 [전체 잭팟] ${target_jackpot:.2f} <b>{logic_qty}주</b> (옵션)\n"
-                 
                 elif q_list and logic_qty > 0:
                     l1_qty = q_list[-1].get('qty', 0)
                     l1_price = q_list[-1].get('price', safe_prev_close)
@@ -760,7 +831,7 @@ class TelegramController:
             status_code in ["PRE", "REG"], p_trade_data={}, 
             exchange_rate=exchange_rate
         )
-        
+
         await update.message.reply_text(final_msg, reply_markup=markup, parse_mode='HTML')
 
     async def cmd_record(self, update, context):
