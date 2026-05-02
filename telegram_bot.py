@@ -5,6 +5,7 @@
 # MODIFIED: [V44.45 헌법 수술] _get_market_status 달력 API(mcal) 동기 블로킹 비동기 래핑 및 타임아웃 Fail-Open 족쇄 체결 완료. Callers 전면 await 동기화.
 # MODIFIED: [V44.48 텔레그램 다이렉트 파일 입출력 비동기 래핑 및 멱등성 보장] cmd_add_q, cmd_clear_q 데드코드 통신 배선 철거 및 인플레이스 원자적 쓰기 탑재.
 # NEW: [2단계 수술] cmd_add_q 및 cmd_clear_q 내부에 존재하던 낡은 hasattr(self.queue_ledger, '_load') 찌꺼기 100% 영구 소각.
+# 🚨 MODIFIED: [V44.49 cmd_sync 이벤트 루프 교착 방어] 통합 지시서 렌더링 시 발생하는 모든 파일 I/O 스캔 작업 비동기 래핑 완료.
 # ==========================================================
 import logging
 import datetime
@@ -279,7 +280,8 @@ class TelegramController:
             from queue_ledger import QueueLedger
             self.queue_ledger = QueueLedger()
             
-        q_data = self.queue_ledger.get_queue(ticker)
+        # 🚨 MODIFIED: [V44.49] 비동기 래핑
+        q_data = await asyncio.to_thread(self.queue_ledger.get_queue, ticker)
             
         msg, reply_markup = self.view.get_queue_management_menu(ticker, q_data)
         await update.message.reply_text(text=msg, reply_markup=reply_markup, parse_mode='HTML')
@@ -440,7 +442,8 @@ class TelegramController:
         dst_txt = "🌞 서머타임 (17:30)" if target_hour == 17 else "❄️ 겨울 (18:30)"
         status_code, status_text = await self._get_market_status()
         
-        tickers = self.cfg.get_active_tickers()
+        # 🚨 MODIFIED: [V44.49] 파일 I/O 및 객체 속성 조회 작업 비동기 래핑
+        tickers = await asyncio.to_thread(self.cfg.get_active_tickers)
         
         render_tickers = list(tickers)
                 
@@ -528,20 +531,26 @@ class TelegramController:
             current_day_high = tracking_status.get('day_high', day_high) 
             hybrid_target_price = current_day_high * (1 - (abs(dynamic_pct) / 100.0))
             trigger_reason = f"-{abs(dynamic_pct)}%"
-            is_already_ordered = self.cfg.check_lock(t, "REG") or self.cfg.check_lock(t, "SNIPER")
             
-            ver = self.cfg.get_version(t)
-            is_manual_vwap = getattr(self.cfg, 'get_manual_vwap_mode', lambda x: False)(t)
+            # 🚨 MODIFIED: [V44.49] cfg.check_lock 비동기 래핑
+            is_locked_reg = await asyncio.to_thread(self.cfg.check_lock, t, "REG")
+            is_locked_sniper = await asyncio.to_thread(self.cfg.check_lock, t, "SNIPER")
+            is_already_ordered = is_locked_reg or is_locked_sniper
+            
+            # 🚨 MODIFIED: [V44.49] cfg 스캔 비동기 래핑
+            ver = await asyncio.to_thread(self.cfg.get_version, t)
+            is_manual_vwap = await asyncio.to_thread(getattr(self.cfg, 'get_manual_vwap_mode', lambda x: False), t)
             
             cached_snap = None
             if ver == "V_REV":
-                cached_snap = self.strategy.v_rev_plugin.load_daily_snapshot(t)
+                # 🚨 MODIFIED: [V44.49] 스냅샷 로드 비동기 래핑
+                cached_snap = await asyncio.to_thread(self.strategy.v_rev_plugin.load_daily_snapshot, t)
             elif ver == "V14":
                 if is_manual_vwap:
-                    cached_snap = self.strategy.v14_vwap_plugin.load_daily_snapshot(t)
+                    cached_snap = await asyncio.to_thread(self.strategy.v14_vwap_plugin.load_daily_snapshot, t)
                 else:
                     if hasattr(self.strategy, 'v14_plugin') and hasattr(self.strategy.v14_plugin, 'load_daily_snapshot'):
-                        cached_snap = self.strategy.v14_plugin.load_daily_snapshot(t)
+                        cached_snap = await asyncio.to_thread(self.strategy.v14_plugin.load_daily_snapshot, t)
             
             if dynamic_pct_obj and hasattr(dynamic_pct_obj, 'metric_val'):
                 real_val = float(dynamic_pct_obj.metric_val)
@@ -569,14 +578,18 @@ class TelegramController:
             except Exception:
                 regime_data = None
 
-            plan = self.strategy.get_plan(
+            # 🚨 MODIFIED: [V44.49] get_plan 비동기 래핑
+            plan = await asyncio.to_thread(
+                self.strategy.get_plan,
                 t, curr, actual_avg, logic_qty, safe_prev_close, ma_5day=ma_5day,
                 market_type="REG", available_cash=allocated_cash[t],
                 is_simulation=True, regime_data=regime_data
             )
             
-            split = self.cfg.get_split_count(t)
-            seed = self.cfg.get_seed(t)
+            # 🚨 MODIFIED: [V44.49] 파일 I/O 스캔 비동기 래핑
+            split = await asyncio.to_thread(self.cfg.get_split_count, t)
+            seed = await asyncio.to_thread(self.cfg.get_seed, t)
+            
             t_val = plan.get('t_val', 0.0)
             is_rev = plan.get('is_reverse', False)
             
@@ -589,7 +602,8 @@ class TelegramController:
                     from queue_ledger import QueueLedger
                     self.queue_ledger = QueueLedger()
                     
-                q_list = self.queue_ledger.get_queue(t)
+                # 🚨 MODIFIED: [V44.49] 큐 장부 스캔 비동기 래핑
+                q_list = await asyncio.to_thread(self.queue_ledger.get_queue, t)
                 v_rev_q_lots = len(q_list)
                 v_rev_q_qty = sum(item.get('qty', 0) for item in q_list)
     
@@ -694,7 +708,12 @@ class TelegramController:
                     v_rev_guidance += "작동 시간은 반드시 \n<b>[장 마감 30분 전 ~ 장 마감]</b>\n으로만 세팅하셔야 창출됩니다.\n"
                     v_rev_guidance += "장중 내내 작동하게 둘 경우 V-REV 코어 전략의 수익률이 심각하게 파괴됩니다.\n"
 
-            if hasattr(self.cfg, 'get_avwap_hybrid_mode') and self.cfg.get_avwap_hybrid_mode(t):
+            # 🚨 MODIFIED: [V44.49] 환경설정 조회 비동기 래핑
+            is_avwap_hybrid_on = False
+            if hasattr(self.cfg, 'get_avwap_hybrid_mode'):
+                is_avwap_hybrid_on = await asyncio.to_thread(self.cfg.get_avwap_hybrid_mode, t)
+
+            if is_avwap_hybrid_on:
                 is_avwap_active = True
                 avwap_qty = tracking_cache.get(f"AVWAP_QTY_{t}", 0)
                 avwap_avg = tracking_cache.get(f"AVWAP_AVG_{t}", 0.0)
@@ -727,7 +746,9 @@ class TelegramController:
                         if hasattr(self.strategy, 'v_avwap_plugin'):
                             avwap_state_dict = {"strikes": tracking_cache.get(f"AVWAP_STRIKES_{t}", 0), "cooldown_active": tracking_cache.get(f"AVWAP_COOLDOWN_{t}", False)}
                             
-                            decision = self.strategy.v_avwap_plugin.get_decision(
+                            # 🚨 [비동기 래핑]
+                            decision = await asyncio.to_thread(
+                                self.strategy.v_avwap_plugin.get_decision,
                                 base_ticker=avwap_base_ticker, exec_ticker=t,
                                 base_curr_p=base_curr_p, exec_curr_p=curr,
                                 df_1min_base=df_1min_base, avwap_qty=avwap_qty,
@@ -757,16 +778,24 @@ class TelegramController:
                     elif curr_time >= time_1500:
                         avwap_status_txt = "⛔ 금일 감시 종료"
 
+            # 🚨 MODIFIED: [V44.49] 속성 조회 비동기 래핑 변수 통합
+            upward_sniper_mode_on = await asyncio.to_thread(self.cfg.get_upward_sniper_mode, t)
+            target_val = await asyncio.to_thread(self.cfg.get_target_profit, t)
+            escrow_val = await asyncio.to_thread(self.cfg.get_escrow_cash, t)
+            avwap_gap_thresh_val = await asyncio.to_thread(getattr(self.cfg, 'get_avwap_gap_threshold', lambda x: -0.67), t) if is_avwap_active else -0.67
+            vrev_gap_switch_val = await asyncio.to_thread(getattr(self.cfg, 'get_vrev_gap_switching_mode', lambda x: False), t)
+            vrev_gap_thresh_val = await asyncio.to_thread(getattr(self.cfg, 'get_vrev_gap_threshold', lambda x: -0.67), t)
+
             ticker_data_list.append({
                 'ticker': t, 'version': ver, 't_val': t_val, 'split': split, 'curr': curr, 'avg': actual_avg, 'qty': actual_qty,
                 'profit_amt': (curr - actual_avg) * actual_qty if actual_qty > 0 else 0, 
                 'profit_pct': (curr - actual_avg) / actual_avg * 100 if actual_avg > 0 else 0,
-                'upward_sniper': "ON" if self.cfg.get_upward_sniper_mode(t) else "OFF",
-                'target': self.cfg.get_target_profit(t), 'star_pct': round(plan.get('star_ratio', 0) * 100, 2) if 'star_ratio' in plan else 0.0,
+                'upward_sniper': "ON" if upward_sniper_mode_on else "OFF",
+                'target': target_val, 'star_pct': round(plan.get('star_ratio', 0) * 100, 2) if 'star_ratio' in plan else 0.0,
                 'seed': seed, 'one_portion': plan.get('one_portion', 0.0), 'plan': plan,
                 'is_locked': is_already_ordered, 'mode': "REG",
                 'is_reverse': is_rev, 'star_price': plan.get('star_price', 0.0),
-                'escrow': self.cfg.get_escrow_cash(t),
+                'escrow': escrow_val,
                 'hybrid_target': hybrid_target_price,
                 'trigger_reason': trigger_reason,
                 'sniper_trigger': abs(float(dynamic_pct)), 
@@ -793,9 +822,9 @@ class TelegramController:
                 'avwap_prev_vwap': avwap_prev_vwap if is_avwap_active else 0.0,
                 'avwap_rolling_tp': avwap_rolling_tp if is_avwap_active else 0.0,
                 'avwap_gap_pct': avwap_gap_pct if is_avwap_active else 0.0,
-                'avwap_gap_thresh': getattr(self.cfg, 'get_avwap_gap_threshold', lambda x: -0.67)(t) if is_avwap_active else -0.67,
-                'vrev_gap_switch': getattr(self.cfg, 'get_vrev_gap_switching_mode', lambda x: False)(t),
-                'vrev_gap_thresh': getattr(self.cfg, 'get_vrev_gap_threshold', lambda x: -0.67)(t),
+                'avwap_gap_thresh': avwap_gap_thresh_val,
+                'vrev_gap_switch': vrev_gap_switch_val,
+                'vrev_gap_thresh': vrev_gap_thresh_val,
                 'is_manual_vwap': is_manual_vwap,
                 'is_zero_start': is_zero_start_fact,
                 'has_snapshot': bool(cached_snap)

@@ -3,6 +3,7 @@
 # MODIFIED: [V44.30] AVWAP 관제탑 순수 모니터링화 (설정 제어 버튼 소각)
 # MODIFIED: [V44.31] 체력 분석 기준 팩트 교정 - 현재가가 아닌 '당일 고가(High)' 기준으로 방전율 및 잔여 체력 계산 락온 완료
 # NEW: [1단계 타임라인 수술] 10:00 EST 타임쉴드 버그를 10:20 EST로 절대 락온 및 UI 텍스트 팩트 교정.
+# 🚨 MODIFIED: [V44.50 이벤트 루프 교착 방어] 관제탑 렌더링 시 발생하는 모든 JSON 설정 파일 스캔 및 속성 조회를 비동기 래핑 완료.
 # ==========================================================
 import logging
 import datetime
@@ -22,14 +23,15 @@ class AvwapConsolePlugin:
         est = ZoneInfo('America/New_York')
         now_est = datetime.datetime.now(est)
         
-        active_tickers = self.cfg.get_active_tickers()
+        # 🚨 MODIFIED: 파일 I/O 비동기 래핑
+        active_tickers = await asyncio.to_thread(self.cfg.get_active_tickers)
         avwap_tickers = [t for t in active_tickers if t == "SOXL"]
         if "SOXL" in avwap_tickers:
             avwap_tickers.append("SOXS")
             
         if not avwap_tickers:
             return "⚠️ <b>[AVWAP 암살자 오프라인]</b>\n▫️ AVWAP 지원 종목이 없습니다.", None
-            
+        
         # 🚨 [V44.30 수술] 모드 활성화 여부 상관없이 무조건 렌더링하도록 락다운 해제
         active_avwap = avwap_tickers
 
@@ -113,7 +115,8 @@ class AvwapConsolePlugin:
         keyboard = []
 
         for t in active_avwap:
-            is_avwap_active = getattr(self.cfg, 'get_avwap_hybrid_mode', lambda x: False)("SOXL" if t == "SOXS" else t)
+            # 🚨 MODIFIED: 파일 I/O 속성 조회 비동기 래핑
+            is_avwap_active = await asyncio.to_thread(getattr(self.cfg, 'get_avwap_hybrid_mode', lambda x: False), "SOXL" if t == "SOXS" else t)
             active_str = "🟢 가동 중" if is_avwap_active else "⚪ 대기 중 (OFF)"
             
             try:
@@ -142,8 +145,9 @@ class AvwapConsolePlugin:
             strikes = tracking_cache.get(f"AVWAP_STRIKES_{t}", 0)
             is_shutdown = tracking_cache.get(f"AVWAP_SHUTDOWN_{t}", False)
             
-            is_multi = getattr(self.cfg, 'get_avwap_multi_strike_mode', lambda x: False)(t)
-            user_target_pct = getattr(self.cfg, 'get_avwap_target_profit', lambda x: 4.0)(t)
+            # 🚨 MODIFIED: 파일 I/O 속성 조회 비동기 래핑
+            is_multi = await asyncio.to_thread(getattr(self.cfg, 'get_avwap_multi_strike_mode', lambda x: False), t)
+            user_target_pct = await asyncio.to_thread(getattr(self.cfg, 'get_avwap_target_profit', lambda x: 4.0), t)
             target_mode = tracking_cache.get(f"AVWAP_TARGET_MODE_{t}", "AUTO") 
             
             label = "롱" if t == "SOXL" else "숏"

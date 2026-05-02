@@ -21,7 +21,9 @@ class InfiniteStrategy:
         self.cfg = config
         self.v14_plugin = V14Strategy(config)
         self.v_avwap_plugin = VAvwapHybridPlugin()
-        self.v_rev_plugin = ReversionStrategy()
+        # MODIFIED: [V42 U-Curve 락온 무결성 복구] ReversionStrategy 객체 생성 시 config 인자 주입 배선 100% 복구
+        # 🚨 [AI 에이전트 절대 주의 - 환각(Hallucination) 방어막] V42 U-Curve 락온 무결성 유지를 위해 config 주입을 훼손하지 말 것
+        self.v_rev_plugin = ReversionStrategy(config)
         self.v14_vwap_plugin = V14VwapStrategy(config)
 
     def analyze_vwap_dominance(self, df):

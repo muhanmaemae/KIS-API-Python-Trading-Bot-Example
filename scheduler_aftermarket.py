@@ -5,6 +5,7 @@
 # V-REV 모드일 경우 KIS 실잔고 평단가를 전면 무시하고, 오직 V-REV 큐 장부의 진성 평단가를 역산하여 3% 로터리 덫 타점에 반영하도록 락온 완료.
 # NEW: [V44.09 AVWAP 물량 물귀신 덤핑 원천 차단 및 디커플링 팩트 수술] AVWAP 암살자가 장중 딥매수한 물량이 장 마감 직후 애프터마켓 덫에 묶여 동반 투매(물귀신)되는 치명적 맹점을 완벽 수술. V-REV 큐에 해당하는 수량만을 수학적으로 핀셋 차감하여 로터리 덫으로 전송하도록 물량 디커플링 락온 완료.
 # MODIFIED: [V44.44 이벤트 루프 교착 방어] 달력 API(pandas_market_calendars) 동기 블로킹 비동기 래핑 및 타임아웃 Fail-Open 족쇄 체결 완료.
+# 🚨 MODIFIED: [V44.47 이벤트 루프 데드락 영구 소각] JSON 및 장부 데이터를 스캔하는 모든 동기 호출을 예외 없이 비동기 래핑 완료.
 # ==========================================================
 import logging
 import asyncio
@@ -48,7 +49,8 @@ async def scheduled_after_market_lottery(context):
         logging.info("🌙 [애프터마켓] 금일 휴장일로 로터리 덫 스케줄러를 패스합니다.")
         return
 
-    active_tickers = cfg.get_active_tickers()
+    # 🚨 [비동기 래핑] 파일 I/O 동기 블로킹 방어
+    active_tickers = await asyncio.to_thread(cfg.get_active_tickers)
 
     for t in active_tickers:
         # 🚨 [V40.03 팩트 수술 1단계] 호가창에 묶인 미체결 매도 주문 강제 취소 (주식 해방)
@@ -72,7 +74,8 @@ async def scheduled_after_market_lottery(context):
         actual_avg = float(h_data.get('avg') or 0.0)
 
         # 🚨 NEW: [V44.09 AVWAP 물량 물귀신 덤핑 원천 차단 및 디커플링 팩트 수술]
-        ver = cfg.get_version(t)
+        # 🚨 [비동기 래핑] 파일 I/O 동기 블로킹 방어
+        ver = await asyncio.to_thread(cfg.get_version, t)
         target_avg = actual_avg
         target_qty = ord_psbl_qty
         avwap_qty = 0
@@ -82,7 +85,8 @@ async def scheduled_after_market_lottery(context):
             # 1) 평단가 팩트 디커플링
             queue_ledger = app_data.get('queue_ledger')
             if queue_ledger:
-                q_data = queue_ledger.get_queue(t)
+                # 🚨 [비동기 래핑] 파일 I/O 동기 블로킹 방어
+                q_data = await asyncio.to_thread(queue_ledger.get_queue, t)
                 vrev_qty = sum(int(float(item.get('qty', 0))) for item in q_data)
                 if vrev_qty > 0:
                     vrev_inv = sum(int(float(item.get('qty', 0))) * float(item.get('price', 0.0)) for item in q_data)
@@ -99,7 +103,8 @@ async def scheduled_after_market_lottery(context):
                 if avwap_qty == 0:
                     strategy = app_data.get('strategy')
                     if strategy and hasattr(strategy, 'v_avwap_plugin'):
-                        avwap_state = strategy.v_avwap_plugin.load_state(t, now_est)
+                        # 🚨 [비동기 래핑] 파일 I/O 동기 블로킹 방어
+                        avwap_state = await asyncio.to_thread(strategy.v_avwap_plugin.load_state, t, now_est)
                         avwap_qty = int(avwap_state.get('qty', 0))
             except Exception as e:
                 logging.error(f"🚨 [{t}] AVWAP 상태 로드 에러 (물량 디커플링 우회): {e}")
@@ -120,15 +125,18 @@ async def scheduled_after_market_lottery(context):
             from strategy_reversion import ReversionStrategy
             from strategy_v14_vwap import V14VwapStrategy
             
-            is_manual_vwap = getattr(cfg, 'get_manual_vwap_mode', lambda x: False)(t)
+            # 🚨 [비동기 래핑] 파일 I/O 동기 블로킹 방어
+            is_manual_vwap = await asyncio.to_thread(getattr(cfg, 'get_manual_vwap_mode', lambda x: False), t)
             
             cached_snap = None
             if ver == "V_REV":
-                rev_plugin = ReversionStrategy()
-                cached_snap = rev_plugin.load_daily_snapshot(t)
+                rev_plugin = ReversionStrategy(cfg)
+                # 🚨 [비동기 래핑] 파일 I/O 동기 블로킹 방어
+                cached_snap = await asyncio.to_thread(rev_plugin.load_daily_snapshot, t)
             elif ver == "V14" and is_manual_vwap:
                 v14_vwap_plugin = V14VwapStrategy(cfg)
-                cached_snap = v14_vwap_plugin.load_daily_snapshot(t)
+                # 🚨 [비동기 래핑] 파일 I/O 동기 블로킹 방어
+                cached_snap = await asyncio.to_thread(v14_vwap_plugin.load_daily_snapshot, t)
                 
             if cached_snap:
                 is_zero_start_fact = cached_snap.get("is_zero_start", False)

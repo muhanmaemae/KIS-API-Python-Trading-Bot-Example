@@ -1,11 +1,11 @@
+# ==========================================================
+# FILE: strategy_reversion.py
+# ==========================================================
 # MODIFIED: [V44.27 0주 스냅샷 환각 락온] 서버 재시작으로 인메모리 스냅샷이 소실되었을 때, VWAP이 장중 매수한 로트를 기보유 물량으로 오판하여 매도를 재개(하극상)하던 맹점 원천 차단. 큐 장부에서 당일 날짜(EST)의 로트를 100% 도려내고 오직 어제까지 이월된 순수 과거 물량만을 스캔하여 '0주 새출발' 상태를 완벽히 팩트 복구하는 타임머신 역산 엔진 이식 완료.
 # MODIFIED: [V44.25 예산 탈취(Stealing) 런타임 붕괴 방어막 이식] Buy1이 Buy2의 미사용 예산을 훔쳐와 무한 타격(34주 체결 등)하는 차원 붕괴를 영구 소각.
 # MODIFIED: [V44.25 AVWAP 디커플링] VWAP 기상 전 스냅샷 2중 교차 검증(Fail-Safe) 및 암살자 물량(AVWAP) 100% 격리(Decoupling) 파이프라인 이식 완료.
 # MODIFIED: [V44.36 큐 장부 vs 브로커 실잔고 불일치 팩트 스캔] 페일세이프 스냅샷 복원 시 KIS 순수 본대 수량과 큐 장부 이월 수량 간의 팩트 불일치가 발생할 경우 명시적으로 경고를 타전하여 CALIB 보정을 유도하도록 감시망(EC-3) 이식 완료.
 # MODIFIED: [V44.48 런타임 붕괴 방어] 들여쓰기 붕괴(IndentationError) 완벽 교정.
-# ==========================================================
-# FILE: strategy_reversion.py
-# ==========================================================
 import math
 import os
 import json
@@ -15,7 +15,10 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 class ReversionStrategy:
-    def __init__(self):
+    # MODIFIED: [V42 U-Curve 락온 무결성 복구] config 주입 배선 100% 복구
+    # 🚨 [AI 에이전트 절대 주의 환각 방어막] V42 U-Curve 락온 무결성 유지를 위해 config 주입을 훼손하지 말 것
+    def __init__(self, config):
+        self.cfg = config
         self.residual = {
             "BUY1": {}, "BUY2": {}, 
             "SELL_L1": {}, "SELL_UPPER": {}, "SELL_JACKPOT": {}
