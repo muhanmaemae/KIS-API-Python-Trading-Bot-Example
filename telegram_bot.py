@@ -8,6 +8,7 @@
 # 🚨 MODIFIED: [V44.49 cmd_sync 이벤트 루프 교착 방어] 통합 지시서 렌더링 시 발생하는 모든 파일 I/O 스캔 작업 비동기 래핑 완료.
 # 🚨 MODIFIED: [맹점 4 수술] 텔레그램 명령어 호출 시 발생하는 모든 동기 I/O(cfg 속성 조회) 전면 비동기 래핑 완료.
 # 🚨 MODIFIED: [NameError 픽스] ticker_data_list 매핑 시 safe_seed 변수명 불일치 런타임 에러 팩트 교정 완료.
+# 🚨 MODIFIED: [V44.54 TypeError 코루틴 비동기 래핑] is_update_allowed 및 restart_daemon 호출부 await 팩트 교정 완료.
 # ==========================================================
 import logging
 import datetime
@@ -248,7 +249,8 @@ class TelegramController:
         from plugin_updater import SystemUpdater
         updater = SystemUpdater()
         
-        allowed, fail_msg = updater.is_update_allowed()
+        # MODIFIED: [V44.54 TypeError 코루틴 런타임 붕괴 방어] is_update_allowed 비동기 래핑(await) 팩트 교정
+        allowed, fail_msg = await updater.is_update_allowed()
         if not allowed:
             return await update.message.reply_text(f"🛑 <b>[작전 중 업데이트 거부]</b>\n\n{fail_msg}", parse_mode='HTML')
         
@@ -261,7 +263,8 @@ class TelegramController:
             
             if success:
                 await status_msg.edit_text(f"✅ <b>[동기화 완료]</b> {safe_msg}\n\n🔄 시스템 데몬(pipiosbot)을 OS 단에서 재가동합니다. 다운타임 후 봇이 다시 깨어납니다.", parse_mode='HTML')
-                updater.restart_daemon()
+                # MODIFIED: [V44.54 데몬 재가동 코루틴 대기] restart_daemon 비동기 래핑(await) 적용
+                await updater.restart_daemon()
             else:
                 await status_msg.edit_text(f"❌ <b>[동기화 실패]</b>\n▫️ 사유: {safe_msg}", parse_mode='HTML')
         except Exception as e:
