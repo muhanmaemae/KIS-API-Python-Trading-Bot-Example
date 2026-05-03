@@ -17,6 +17,7 @@ from strategy_reversion import ReversionStrategy
 from strategy_v14_vwap import V14VwapStrategy
 
 class InfiniteStrategy:
+    
     def __init__(self, config):
         self.cfg = config
         self.v14_plugin = V14Strategy(config)
@@ -138,10 +139,12 @@ class InfiniteStrategy:
                 't_val': 0.0, 'is_reverse': False, 'star_price': 0.0, 'one_portion': 0.0
             }
         else:
+            # MODIFIED: [V44.58 라우팅 누수 디커플링 붕괴 엣지 케이스 수술] v14_plugin.get_plan 호출 시 is_snapshot_mode 파라미터 배선 팩트 복구 완료
             plan = self.v14_plugin.get_plan(
                 ticker=ticker, current_price=current_price, avg_price=avg_price, qty=qty,
                 prev_close=prev_close, ma_5day=ma_5day, market_type=market_type,
-                available_cash=available_cash, is_simulation=is_simulation, vwap_status=vwap_status
+                available_cash=available_cash, is_simulation=is_simulation, vwap_status=vwap_status,
+                is_snapshot_mode=is_snapshot_mode
             )
             
         # [V40.XX] 옴니 매트릭스 필터 적용 (매수 락온 및 청산 패스)
