@@ -12,12 +12,14 @@
 # 🚨 MODIFIED: [V42.12 그랜드 핫픽스] 부등호 논리 완벽 원상 복구! (당일 > 5분평균 = 상승 롱 / 당일 < 5분평균 = 하락 숏)
 # 🚨 MODIFIED: [V43.00 작전 통제실 복구] 사용자가 설정한 커스텀 목표 수익률(Target) 수신 및 조기퇴근/다중출장 모드 연동 엔진 대수술 완료.
 # 🚨 MODIFIED: [V43.07] 체력 소진율(ATR5) 연동 목표 수익률 자율주행(Auto) 익절 렌더링 엔진 완벽 융합 완료.
-# 🚨 MODIFIED: [V44.03 체력 보존 락온] 매수(BUY) 트리거 최상단에 5일 ATR 기반 잔여 체력 검증 파이프라인을 이식하여 상승/하락 여력이 2.0% 미만일 경우 즉시 방아쇠를 강제 파기(WAIT)하는 무결점 락온 확립.
+# 🚨 MODIFIED: [V44.03 체력 보존 락온] 매수(BUY) 트리거 최상단에 5일 ATR 기반 잔여 체력 검증 파이프라인을 이식하여 상승/하락 여력이 1.0% 미만일 경우 즉시 방아쇠를 강제 파기(WAIT)하는 무결점 락온 확립.
 # 🚨 MODIFIED: [V44.08 팩트 교정] 5분 평균 VWAP 부등호 역배선 100% 원상 복구 및 절대 헌법 락온
 # 🚨 MODIFIED: [V44.19 완전 돌파 즉각 타격 락온] 과거의 낡은 -0.67% 이격도(Gap) 대기 조건이 100% 완벽히 소각되었음을 교차 검증 완료. 모멘텀 충족 시 즉시 방아쇠(VWAP_MOMENTUM_BREAKOUT) 격발 보장.
 # 🚨 MODIFIED: [V44.22 증거금 방어막 탑재] 암살자가 현금 100%를 무지성으로 긁을 때 수수료/슬리피지로 인해 한투 API에서 '주문가능금액 초과'로 리젝(거절)되는 사태를 막기 위해, 예산에 5% 안전 마진(0.95)을 강제 적용하는 락온 이식.
 # MODIFIED: [V44.23 타임라인 롤백] 10:20 EST 락온을 10:00 EST (개장 후 30분)로 완벽히 원상 복구.
 # 🚨 MODIFIED: [V44.61 팩트 교정] 당일 실시간 VWAP 연산 시 프리마켓 노이즈 전면 소각 및 정규장 100% 락온
+# MODIFIED: [V44.62 자율주행 수익률 하향 스위칭] AUTO 모드 수익률 스펙트럼 1.0%~4.0% 절대 락온 완료
+# MODIFIED: [V44.64 진입 마지노선 하향 락온] 최소 잔여 체력 진입 금지선을 2.0%에서 1.0%로 팩트 교정 완료
 # ==========================================================
 import logging
 import datetime
@@ -194,9 +196,6 @@ class VAvwapHybridPlugin:
                 df = df_1min_base.copy()
                 
                 # MODIFIED: [V44.61 팩트 수술] 당일 실시간 VWAP 연산 시 프리마켓 노이즈 원천 차단
-                # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
-                # YF API가 프리마켓 데이터를 포함(prepost=True)하여 반환하므로, 순수 정규장 모멘텀만을 
-                # 측정하기 위해 반드시 '093000' ~ '155900' 구간만 필터링(디커플링)해야 합니다. 이를 훼손하지 마세요.
                 if 'time_est' in df.columns:
                     df = df[(df['time_est'] >= '093000') & (df['time_est'] <= '155900')]
                     
@@ -264,9 +263,11 @@ class VAvwapHybridPlugin:
                 # 🚨 [AI 에이전트 절대 주의 - 환각 방어막] safe_avg 소각, day_high 기준으로 체력 소진율 연산 교정
                 exh_5 = ((day_high - day_low) / atr5_price * 100) if atr5_price > 0 else 0
                 
-                if exh_5 >= 90: final_target_pct = 2.0
-                elif exh_5 >= 80: final_target_pct = 3.0
-                elif exh_5 >= 70: final_target_pct = 4.0
+                # MODIFIED: [V44.63] 수익률 스펙트럼 최저 1.0% ~ 최고 4.0% 락온
+                if exh_5 >= 90: final_target_pct = 1.0
+                elif exh_5 >= 80: final_target_pct = 2.0
+                elif exh_5 >= 70: final_target_pct = 3.0
+                else: final_target_pct = 4.0
             
             final_target_ratio = final_target_pct / 100.0
             
@@ -317,8 +318,9 @@ class VAvwapHybridPlugin:
                 actual_gap_pct = (actual_gap_dollar / prev_c) * 100.0
                 rem_5_pct = atr5 - actual_gap_pct
                 
-                if rem_5_pct < 2.0:
-                    return _build_res('WAIT', f'ATR5_잔여체력_고갈(최소2.0%보장_현재{rem_5_pct:.1f}%)_관망')
+                # 🚨 MODIFIED: [V44.64 진입 마지노선 하향 락온] 최소 잔여 체력 진입 금지선을 2.0%에서 1.0%로 팩트 교정 완료
+                if rem_5_pct < 1.0:
+                    return _build_res('WAIT', f'ATR5_잔여체력_고갈(최소1.0%보장_현재{rem_5_pct:.1f}%)_관망')
                     
             if exec_curr_p > 0 and avwap_alloc_cash > 0:
                 # 🚨 [V44.22 증거금 방어막 탑재] 현금 100% 무지성 매수 시 한투 API 잔고 부족 거절 사태를 막는 5% 안전 버퍼
@@ -330,3 +332,4 @@ class VAvwapHybridPlugin:
             return _build_res('WAIT', '순수현금예산_부족_관망')
             
         return _build_res('WAIT', '타점_대기중')
+

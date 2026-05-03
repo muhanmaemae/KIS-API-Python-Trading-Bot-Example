@@ -6,6 +6,7 @@
 # 🚨 MODIFIED: [V44.50 이벤트 루프 교착 방어] 관제탑 렌더링 시 발생하는 모든 JSON 설정 파일 스캔 및 속성 조회를 비동기 래핑 완료.
 # 🚨 MODIFIED: [V44.61 팩트 교정] 관제탑 실시간 VWAP 연산 시 프리마켓 노이즈 전면 소각 및 정규장 100% 락온
 # 🚨 MODIFIED: [V44.62 인덴테이션 붕괴 수술] PEP8 규격 강제 및 IndentationError(런타임 즉사) 맹점 영구 소각 완료.
+# MODIFIED: [V44.63 자율주행 수익률 하향 스위칭] AUTO 모드 수익률 스펙트럼 1.0%~4.0% 절대 락온 완료
 # ==========================================================
 import logging
 import datetime
@@ -241,17 +242,19 @@ class AvwapConsolePlugin:
                 msg += f"               <b>({exh_5:.0f}% 소진 / 고가 기준)</b>\n"
 
             if target_mode == "AUTO":
-                if exh_5 >= 90: base_target = 2.0
-                elif exh_5 >= 80: base_target = 3.0
-                elif exh_5 >= 70: base_target = 4.0
-                else: base_target = 5.0
+                # MODIFIED: [V44.63 자율주행 수익률 하향 스위칭] UI 표출용 스펙트럼 1.0%~4.0% 절대 락온 완료
+                if exh_5 >= 90: base_target = 1.0
+                elif exh_5 >= 80: base_target = 2.0
+                elif exh_5 >= 70: base_target = 3.0
+                else: base_target = 4.0
                 
                 if rem_5_pct > 0:
                     rem_cap = math.floor(rem_5_pct * 10) / 10.0
                     dynamic_target = min(base_target, rem_cap)
-                    dynamic_target = max(2.0, dynamic_target)
+                    # MODIFIED: [V44.63 자율주행 수익률 하향 스위칭] 최소 1.0% 보장 하드 클램핑 락온
+                    dynamic_target = max(1.0, dynamic_target)
                 else:
-                    dynamic_target = 2.0
+                    dynamic_target = 1.0
                 
                 applied_pct = dynamic_target
                 target_display = f"🤖자율주행 (+{applied_pct:.1f}%)"
@@ -317,3 +320,4 @@ class AvwapConsolePlugin:
         msg += f"💡 <i>설정 제어는 /settlement (전술설정) 메뉴에서 가능합니다.</i>"
 
         return msg, InlineKeyboardMarkup(keyboard)
+
