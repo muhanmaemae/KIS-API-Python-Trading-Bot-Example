@@ -7,6 +7,7 @@
 # 전일 VWAP vs 당일 실시간 VWAP 동행 지표(Coincident Indicator) 듀얼 모멘텀 엔진 수신 및 라우팅 락온
 # 🚨 MODIFIED: [V43.00 작전 통제실 복구] AVWAP 사용자가 설정하는 커스텀 목표 수익률(Target) 및 근무 모드(조기퇴근/다중출장) 파라미터를 하위 플러그인(strategy_v_avwap)으로 전달하는 라우터 배선 복구 완료.
 # 🚨 MODIFIED: [V44.03 AVWAP 매수 방어] **kwargs 배선 개통으로 5일 ATR 등 신규 파라미터 주입 호환성 확보
+# 🚨 MODIFIED: [V44.61 팩트 교정] VWAP 지배력(Dominance) 분석 시 프리마켓 거래량 노이즈 원천 차단 및 정규장 100% 락온
 # ==========================================================
 import logging
 import pandas as pd
@@ -32,6 +33,16 @@ class InfiniteStrategy:
             return {"vwap_price": 0.0, "is_strong_up": False, "is_strong_down": False}
             
         try:
+            # 🚨 MODIFIED: [V44.61 팩트 수술] 프리마켓 거래량 노이즈가 지배력 연산을 오염시키는 맹점 원천 차단
+            # [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
+            # YF API가 프리마켓 데이터를 포함하여 반환하므로 순수 정규장 모멘텀만을 
+            # 측정하기 위해 반드시 '093000' ~ '155900' 구간만 필터링해야 합니다.
+            if 'time_est' in df.columns:
+                df = df[(df['time_est'] >= '093000') & (df['time_est'] <= '155900')]
+            
+            if df.empty or len(df) < 10:
+                return {"vwap_price": 0.0, "is_strong_up": False, "is_strong_down": False}
+
             if 'High' in df.columns and 'Low' in df.columns:
                 typical_price = (df['High'] + df['Low'] + df['Close']) / 3.0
             else:

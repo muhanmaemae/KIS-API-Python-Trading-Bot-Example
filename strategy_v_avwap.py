@@ -1,7 +1,7 @@
 # ==========================================================
 # FILE: strategy_v_avwap.py
 # ==========================================================
-# [strategy_v_avwap.py] - 🌟 V44.23 앱솔루트 팩트 교정 🌟
+# [strategy_v_avwap.py] - 🌟 V44.61 앱솔루트 팩트 교정 🌟
 # 💡 V-REV 하이브리드 전용 차세대 AVWAP 스나이퍼 플러그인 (Dual-Referencing)
 # ⚠️ 초공격형 당일 청산 암살자 (V-REV 잉여 현금 100% 몰빵 & -8% 하드스탑)
 # 🚨 [V29.03 팩트 수술] 기억상실(Amnesia) 엣지 케이스 방어막 (Persistence 엔진 탑재)
@@ -17,6 +17,7 @@
 # 🚨 MODIFIED: [V44.19 완전 돌파 즉각 타격 락온] 과거의 낡은 -0.67% 이격도(Gap) 대기 조건이 100% 완벽히 소각되었음을 교차 검증 완료. 모멘텀 충족 시 즉시 방아쇠(VWAP_MOMENTUM_BREAKOUT) 격발 보장.
 # 🚨 MODIFIED: [V44.22 증거금 방어막 탑재] 암살자가 현금 100%를 무지성으로 긁을 때 수수료/슬리피지로 인해 한투 API에서 '주문가능금액 초과'로 리젝(거절)되는 사태를 막기 위해, 예산에 5% 안전 마진(0.95)을 강제 적용하는 락온 이식.
 # MODIFIED: [V44.23 타임라인 롤백] 10:20 EST 락온을 10:00 EST (개장 후 30분)로 완벽히 원상 복구.
+# 🚨 MODIFIED: [V44.61 팩트 교정] 당일 실시간 VWAP 연산 시 프리마켓 노이즈 전면 소각 및 정규장 100% 락온
 # ==========================================================
 import logging
 import datetime
@@ -191,6 +192,14 @@ class VAvwapHybridPlugin:
         if df_1min_base is not None and not df_1min_base.empty:
             try:
                 df = df_1min_base.copy()
+                
+                # MODIFIED: [V44.61 팩트 수술] 당일 실시간 VWAP 연산 시 프리마켓 노이즈 원천 차단
+                # 🚨 [AI 에이전트(Copilot/Claude) 절대 주의 - 환각(Hallucination) 방어막]
+                # YF API가 프리마켓 데이터를 포함(prepost=True)하여 반환하므로, 순수 정규장 모멘텀만을 
+                # 측정하기 위해 반드시 '093000' ~ '155900' 구간만 필터링(디커플링)해야 합니다. 이를 훼손하지 마세요.
+                if 'time_est' in df.columns:
+                    df = df[(df['time_est'] >= '093000') & (df['time_est'] <= '155900')]
+                    
                 df['tp'] = (df['high'].astype(float) + df['low'].astype(float) + df['close'].astype(float)) / 3.0
                 df['vol'] = df['volume'].astype(float)
                 df['vol_tp'] = df['tp'] * df['vol']
